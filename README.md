@@ -156,6 +156,45 @@ What the comparison shows:
 - **Bandwidth falls short of 3.3 TB/s.** DreamRAM calibrates core tCK to the HBM3 baseline at the same node. Its pin rate follows from bank geometry, not from HBM4's faster I/O, so it cannot reach Samsung's figure.
 - **The base die is not modelled.** The slide shows its PHY / TSV / DA / MBIST & IEEE1500 regions, but DreamRAM does not floorplan the base die.
 
+### HBM5 exploration: 2× DQs, 2× channels per die, same concurrency
+
+The scenario is a hypothetical HBM5 with twice HBM4's DQ pins and twice its channels per die, kept to 4 dies and 1 SID. It is compared with our HBM4 coupled-row design at the same die density. Concurrency is kept: every pseudo-channel still has **2 bank groups × 8 banks**, as in HBM4. The only thing given up is rows: each die now has 512 banks, so at 32 Gb per die each bank holds 64 Mib, or **8 K host rows of 1 KiB instead of 16 K**. The row size is unchanged.
+
+**Fixed parameters**
+- 64 channels, 16 per die, 2 pseudo-channels each.
+- 4,352 DQs (4,096 data); each pseudo-channel keeps 32 DQs and one 256-bit pump per atom.
+- 16 GB per stack.
+- 34/36 nm array.
+- At least 8 Gb/s.
+
+**Search.** Every bank organisation meeting those constraints was run through DreamRAM's exporter. The sweep covered:
+- bank-group tiling: 2 vertical, or 2 side by side;
+- MAT size, MAT count, MDLs, MDL/CSL routing and layer sharing;
+- BLSA vs BRVSA;
+- coupled rows;
+- 1 or 2 channel rows.
+
+That gave 490 valid designs; 172 have 1 KiB rows and run at ≥ 8 Gb/s. **None fits DreamRAM's 13 mm die limit.** Four representative designs are in **Example designs → HBM5 exploration**, each exported with a die limit just above its size:
+
+| | HBM4 (reference) | HBM4 MATs + coupled 2 KiB WL | Smallest die | Near-smallest, 1 channel row | HBM4 latency |
+| --- | --- | --- | --- | --- | --- |
+| Banks / PC, rows / bank | 16, 16 K | 16, 8 K | 16, 8 K | 16, 8 K | 16, 8 K |
+| Bank organisation | 32 × 512-BL MATs, coupled, 16 × 512 WL | same, 8 × 512 WL | 16 × 512-BL MATs, 8 × 1024 WL, 2 CSL/MDL layers | same | 16 × 512-BL MATs, 16 × 512 WL, 2 layers |
+| Channel rows | 1 | 2 | 2 | 1 | 1 |
+| Bank (µm) | 857 × 503 | 857 × 304 | 452 × 463 | 452 × 463 | 452 × 503 |
+| Die | 15.10 × 10.28 mm = 155.3 mm² | 15.10 × 13.89 mm = 209.7 mm² (+35%) | 8.62 × 22.02 mm = 189.8 mm² (+22%) | 17.23 × 11.15 mm = 192.2 mm² (+24%) | 17.23 × 11.52 mm = 198.5 mm² (+28%) |
+| TSV region | 25.0 mm² | 49.9 mm² | 49.9 mm² | 49.9 mm² | 49.9 mm² |
+| Data rate / bandwidth | 8.27 Gb/s · 2,117 GB/s | 10.20 Gb/s · 5,224 GB/s | 9.20 Gb/s · 4,708 GB/s | 9.20 Gb/s · 4,708 GB/s | 8.87 Gb/s · 4,541 GB/s |
+| Row-miss latency (tCL + tRCD + tRP) | 63.7 (27.7 + 18 + 18) | 74.2 (38.2 + 18 + 18) | 111.9 (58.8 + 26.6 + 26.6) | 82.5 (29.4 + 26.6 + 26.6) | 63.6 (30.3 + 16.6 + 16.6) |
+| Energy / bit (closed / stream) | 3.12 / 1.79 pJ | 3.38 / 1.99 pJ | 3.95 / 2.55 pJ | 3.01 / 1.79 pJ | 2.68 / 1.81 pJ |
+| Worst-case power | 53 W | 141 W | 149 W | 113 W | 97 W |
+
+Takeaways:
+- **The die grows 22–35%.** About 25 mm² comes from the doubled TSV region (every channel's TSVs on every die). The rest is per-bank overhead: twice as many banks, each with its own row and column decoders, dummy and edge rows, and an I/O-control share, over the same total number of cells.
+- **1 KiB physical rows win.** Halving the rows per bank makes the 1 KiB-wide bank (16 MATs × 512 BL) short enough to stay fast, and its decoders and LWDs cost less than HBM4's 2 KiB coupled wordline. The coupled design is still the fastest (10.2 Gb/s) because its bank is so short, but it is the largest.
+- **HBM4 latency costs about 28% area.** With 512-WL MATs and one channel row, the HBM5 die matches HBM4's 63.6 ns row-miss latency at 198.5 mm². 1024-WL MATs save 3% area but add 10 ns to tRCD/tRP. A tall two-row die adds as much again to tCL.
+- **The pin rate is DreamRAM's estimate,** set by bank geometry relative to its HBM3 calibration.
+
 ## Extensions: coupled rows and paired edge subarrays
 
 These are not part of DreamRAM. Both are implemented twice, kept in sync and cross-checked:

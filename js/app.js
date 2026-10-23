@@ -737,9 +737,15 @@
     samsung_hbm4_12h_coupled: 'Samsung HBM4 org (ISSCC 26) · 12-high, 2 channel rows · coupled rows',
     samsung_hbm4_12h_1k_2wide: 'Samsung HBM4 org (ISSCC 26) · 12-high, 2 channel rows · 1 KiB rows, banks 2 wide',
     alternative_samsung: 'Alternative Samsung · 1 SID, 2 channel rows, coupled rows, banks 2 wide',
+    hbm5_2bg_hbm4_mats: 'HBM5 · HBM4 MATs + coupled 2 KiB wordline · 15.1 × 13.9 mm',
+    hbm5_2bg_min_area: 'HBM5 · smallest die · 1 KiB rows, 1024-WL MATs, 2 channel rows · 8.6 × 22.0 mm',
+    hbm5_2bg_min_area_1row: 'HBM5 · near-smallest die, 1 channel row · 17.2 × 11.2 mm',
+    hbm5_2bg_hbm4_latency: 'HBM5 · HBM4 latency (63.6 ns) · 1 KiB rows, 512-WL MATs · 17.2 × 11.5 mm',
   };
   exSel.innerHTML = '<option value="">Example designs…</option>'
-    + '<optgroup label="DreamRAM exports">' + Object.keys(EX).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
+    + '<optgroup label="DreamRAM exports">' + Object.keys(EX).filter((k) => !k.startsWith('hbm5_')).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
+    // HBM5: 16 channels/die, 4096 DQs, 2 bank groups × 8 banks, half the rows per channel of our HBM4 (README)
+    + '<optgroup label="HBM5 exploration">' + Object.keys(exLabels).filter((k) => k.startsWith('hbm5_') && EX[k]).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
     + '<optgroup label="Presets (in-browser model)">' + Object.entries(DR.DESIGN_PRESETS).map(([k, d]) => `<option value="pre:${k}">${d.label}</option>`).join('') + '</optgroup>';
   exSel.onchange = () => {
     const [kind, k] = exSel.value.split(':');
