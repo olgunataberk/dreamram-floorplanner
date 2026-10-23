@@ -34,6 +34,18 @@ Two extensions that are not part of DreamRAM can also be --set (both default to 
   channel_rows=2   place the die's channels in two rows, half above and half below the TSV region,
                    each channel holding all of its bank groups on its side (Samsung ISSCC 2026 HBM4
                    core die). DreamRAM's own template (1) splits every channel across both sides.
+  tck_fixed=NS     the length-independent share of the core column cycle (driver, sensing, precharge), as
+                   at the 16 nm HBM3 node. DreamRAM fixes it at 1 ns; the wire share stays calibrated so the
+                   baseline is still its tCK. Applies to both column stages.
+  tck_fixed_scale=1  scale that fixed share with the logic node, (f / 16 nm)^logic_scale_conf, like
+                   DreamRAM's peripheral tiles.
+  tck_wire=2       treat the in-bank CSL/MDL/LDL lines as unrepeated RC wires, so their delay grows with
+                   length squared (DreamRAM: linear in length times capacitance).
+  bw_bg_cap=1      cap bandwidth at bank groups x one atom per tCCD_L per pseudo-channel (DreamRAM's peak
+                   assumes bgbuses_per_gbus groups exist).
+  tsv_chain=1      count data TSVs from the serdes chain: every pseudo-channel's GBUS bits / gbus_tsv_sd,
+                   MD-ECC and DBI in proportion (DreamRAM counts one pseudo-channel's MDL bits per channel).
+                   gbus_tsv_sd may then be below 1 (more TSVs than GBUS wires, each slower).
 """
 import argparse
 import csv
@@ -46,7 +58,8 @@ PARAMS = ['sids', 'channels', 'ch_per_die', 'pch', 'horiz_bg', 'vert_bg', 'banks
           'csl_mdl_shared_layer', 'ha_layout', 'ha_double_ldls', 'subchannels', 'salp_groups',
           'salp_all', 'pages_per_bgbus_mux', 'mdl_bgbus_sd', 'bgbuses_per_gbus', 'bgbus_gbus_sd',
           'gbus_tsv_sd', 'tsv_dq_sd', 'atom_size']
-EXTENSIONS = {'coupled_rows': 1, 'coupled_lsb': 0, 'edge_pairing': 0, 'ioctl_h': 0, 'channel_rows': 1, 'tccd_bgbus': 0}  # coupled_lsb only labels rows
+EXTENSIONS = {'coupled_rows': 1, 'coupled_lsb': 0, 'edge_pairing': 0, 'ioctl_h': 0, 'channel_rows': 1, 'tccd_bgbus': 0,
+              'tck_fixed': 1, 'tck_fixed_scale': 0, 'tck_wire': 1, 'bw_bg_cap': 0, 'tsv_chain': 0}  # coupled_lsb only labels rows
 
 
 METRICS = ['capacity_gbytes', 'bw_gbytes', 'worst_latency_ns', 'metric_e_per_bit_closed',
@@ -77,7 +90,8 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
     tech = Tech(**{k: v for k, v in t.items() if k in tech_fields})
 
     Model = extended_hbm(Hbm, overrides.get('coupled_rows', 1), overrides.get('edge_pairing', 0), overrides.get('ioctl_h', 0),
-                         overrides.get('channel_rows', 1), overrides.get('tccd_bgbus', 0))
+                         overrides.get('channel_rows', 1), overrides.get('tccd_bgbus', 0),
+                         **{k: overrides.get(k, EXTENSIONS[k]) for k in ('tck_fixed', 'tck_fixed_scale', 'tck_wire', 'bw_bg_cap', 'tsv_chain')})
 
     def make(p, ref, cls=Hbm):
         kw = dict(sids=p['sids'], channels=p['channels'], ch_per_die=p['ch_per_die'], pch=p['pch'],
@@ -128,11 +142,13 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
     return dram, tech, p, (metrics if status == 0 else {}), status
 
 
-def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgbus=0):
+def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgbus=0,
+                 tck_fixed=1, tck_fixed_scale=0, tck_wire=1, bw_bg_cap=0, tsv_chain=0):
     """Hbm subclass adding coupled rows, edge-subarray pairing and an I/O-control height override
     (identical to Hbm when all are off)."""
     import numpy as np
     assert coupled >= 1 and coupled & (coupled - 1) == 0, 'coupled_rows must be a power of two'
+    tck_default = tck_fixed == 1 and not tck_fixed_scale and tck_wire == 1
 
     class ExtendedHbm(Hbm):
         # Column-side page split: a READ reaches only the addressed logical row's 1/C of the MATs.
@@ -166,8 +182,20 @@ def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgb
         # The coupled rows share one column datapath (MDLs muxed onto the BGBUS, then the channel's TSVs
         # and DQs), so per-access DQ counts and data TSVs follow the logical row, not C separate pages.
         def wire_counts(self):
-            n = super().wire_counts()
-            n['dq'] = np.ceil(self.dq_count() / (self.pch * self.channels * Hbm.ind_pages(self)))
+            s = self.gbus_tsv_sd
+            if s < 1:
+                # Hbm.wire_counts asserts tsv <= one atom; fold the fan-out into tsv_dq_sd (dq_count only uses the
+                # product), then recount the TSVs: each GBUS wire spreads over 1 / gbus_tsv_sd slower TSVs
+                self.gbus_tsv_sd, self.tsv_dq_sd = 1, s * self.tsv_dq_sd
+                try:
+                    n = super().wire_counts()
+                finally:
+                    self.gbus_tsv_sd, self.tsv_dq_sd = s, self.tsv_dq_sd / s
+                n['tsv'] = np.ceil(self.gbus_width() * self.md_ecc_factor() / s)
+            else:
+                n = super().wire_counts()
+            if coupled > 1:
+                n['dq'] = np.ceil(self.dq_count() / (self.pch * self.channels * Hbm.ind_pages(self)))
             return n
 
         def atom_time(self, tech):
@@ -175,14 +203,21 @@ def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgb
                 self.dq_speed_factor() * (self.dq_count() / (self.pch * self.channels * Hbm.ind_pages(self))))
 
         def calc_stack_dims(self, tech):
-            # Hbm.calc_stack_dims with data TSVs counted per logical row (ldls_mdls * mats / coupled)
+            if coupled == 1 and not tsv_chain:
+                return super().calc_stack_dims(tech)
+            # Hbm.calc_stack_dims with data TSVs counted per logical row (ldls_mdls * mats / coupled), or with
+            # tsv_chain from the serdes chain (every pseudo-channel's GBUS / gbus_tsv_sd, ECC and DBI in proportion)
             dies_stacked = int(self.sids * self.channels / self.ch_per_die)
             die_width, non_tsv_y = self.bankdie_dims(tech)
             row, col = self.ch_cmd_bits()
             cmd_tsv_count = self.channels * (4 * row + 4 * col + 4 + 1)
             dbi_signals = (self.dbi_factor - 1) * self.bgbus_width()
-            data_tsv_count = self.channels * (self.ldls_mdls * self.mats / coupled + 1 / (self.md_ecc_factor() - 1)
-                                              + dbi_signals + 16 + 8)
+            if tsv_chain:
+                data = self.pch * self.subchannels * self.gbus_width() / self.gbus_tsv_sd
+                data_tsv_count = self.channels * (data * self.md_ecc_factor() + (self.dbi_factor - 1) * data + 16 + 8)
+            else:
+                data_tsv_count = self.channels * (self.ldls_mdls * self.mats / coupled + 1 / (self.md_ecc_factor() - 1)
+                                                  + dbi_signals + 16 + 8)
             height_per_tsv = 1 / ((die_width - 2 * tech.tsv_koz) * tech.tsv_density())
             cmd_tsv_y = cmd_tsv_count * height_per_tsv
             data_tsv_y = data_tsv_count * height_per_tsv
@@ -205,8 +240,28 @@ def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgb
                  + self.mbus_peri_height(tech))
             return x, y
 
+        def fixed_tck(self, tech):
+            # length-independent share of the column cycle (DreamRAM's mdl_csl_driver_time = 1 ns)
+            return tck_fixed * (np.pow(tech.f / 0.016, tech.logic_scale_conf) if tck_fixed_scale else 1)
+
         def bank_stage_tck(self, tech):
-            return Hbm.core_tck(self, tech)  # DreamRAM: CSL + MDL over the bank height, LDL across a MAT
+            if tck_default:
+                return Hbm.core_tck(self, tech)  # DreamRAM: CSL + MDL over the bank height, LDL across a MAT
+            # Hbm.core_tck with the fixed share and the wire-length law as configured
+            mat_width = self.swd_width(tech) + self.mat_cols * self.isolation_cols_overhead * tech.pitch_bl
+            _mat_width = tech.scaled_swd_width() + self._mat_cols * self.isolation_cols_overhead * tech.pitch_bl
+            bank_x, bank_y, cell_area = self.bank_dims(tech)
+            _bank_y = self._bank_y_calc(tech)
+            csl_pitch_ratio, mdl_pitch_ratio = self.csl_mdl_pitch_ratios(tech)
+            rc_ratio_csl = tech.rc_ratio_fixed_width(csl_pitch_ratio, tech._c_within_layer_sparse_csl_mdl)
+            rc_ratio_mdl = tech.rc_ratio_fixed_width(mdl_pitch_ratio, tech._c_within_layer_sparse_csl_mdl)
+            res_ratio = tech.pitch_bl / tech.pitch_wl
+            c_csl, c_mdl, c_ldl = tech.scale_cap(tech._c_csl), tech.scale_cap(tech._c_mdl), tech.scale_cap(tech._c_ldl)
+            denom = (c_csl + 2 * c_mdl) * _bank_y + (res_ratio * c_ldl) * _mat_width
+            sq = tck_wire == 2  # unrepeated RC: delay ~ length squared
+            numer = ((rc_ratio_csl * c_csl + 2 * rc_ratio_mdl * c_mdl) * bank_y * (bank_y / _bank_y if sq else 1)
+                     + (res_ratio * c_ldl) * mat_width * (mat_width / _mat_width if sq else 1))
+            return self.fixed_tck(tech) + (self._tck - tck_fixed) * numer / denom
 
         def bgbus_stage_tck(self, tech):
             # The bank group's shared BG-BUS window: a repeated wire, so delay is linear in length times its
@@ -214,19 +269,29 @@ def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgb
             # bank group's window equals the baseline tCK.
             length = self.wire_lengths(tech)['bgbus+gbus']
             c = tech.c_ratio(self.bgbus_pitch_ratio(tech), tech._c_within_layer_sparse)
-            return 1 + (self._tck - 1) * length * c / self._bgbus_len_ref
+            return self.fixed_tck(tech) + (self._tck - tck_fixed) * length * c / self._bgbus_len_ref
 
         def core_tck(self, tech):
             t = self.bank_stage_tck(tech)
             return max(t, self.bgbus_stage_tck(tech)) if tccd_bgbus else t
+
+        def bandwidth(self, tech):
+            bw = super().bandwidth(tech)
+            if bw_bg_cap:
+                # a pseudo-channel cannot outrun its bank groups, each delivering one atom per tCCD_L
+                per_bg = self.atom_size / 8 / self.tccdl(tech)
+                need = bw / (self.channels * self.pch) / per_bg
+                bgs = self.horiz_bg * self.vert_bg
+                if bgs < need:
+                    bw = bw * bgs / need
+            return bw
 
         def od_ecc_height(self, tech):
             # each bank group's I/O control block (IOSA/WD, OD-ECC + DBI, BG-BUS drivers)
             return float(ioctl_h) if ioctl_h > 0 else super().od_ecc_height(tech)
 
     if coupled == 1:  # keep DreamRAM's own datapath accounting untouched
-        for k in ('wire_counts', 'atom_time', 'calc_stack_dims'):
-            delattr(ExtendedHbm, k)
+        delattr(ExtendedHbm, 'atom_time')
 
     return ExtendedHbm
 

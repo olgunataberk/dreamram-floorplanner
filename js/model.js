@@ -66,6 +66,7 @@
     _tck: 2, _tcl: 28,
     // extensions beyond DreamRAM (tools/export_floorplan.py implements the same in an Hbm subclass)
     coupled_rows: 1, coupled_lsb: 0, edge_pairing: 0, ioctl_h: 0, channel_rows: 1, tccd_bgbus: 0,
+    tck_fixed: 1, tck_fixed_scale: 0, tck_wire: 1, bw_bg_cap: 0, tsv_chain: 0,
   };
 
   // Parameter UI: groups follow DreamRAM's input levels; `values` are the hbm_sweep_default.json ranges.
@@ -102,13 +103,21 @@
       ['edge_pairing', 'Open-BL edge subarrays', [[0, 'Dummy half-subarrays (DreamRAM)'], [1, 'Paired edge subarrays (store data)']]],
       ['channel_rows', 'Channel rows per die', [[1, '1 · each channel spans both halves (DreamRAM)'], [2, '2 · half the channels above, half below the TSVs']]],
       ['tccd_bgbus', 'tCCD_L from', [[0, 'Bank column path only (DreamRAM)'], [1, 'Slower of bank path and BG-BUS window']]],
+      ['tck_fixed', 'Fixed column-cycle time', [[1, '1 ns (DreamRAM)'], [0.75, '0.75 ns'], [0.5, '0.5 ns'], [0.25, '0.25 ns'], [0, '0 · wire delay only']]],
+      ['tck_fixed_scale', 'Fixed time vs. node', [[0, 'Constant (DreamRAM)'], [1, 'Scales with logic: (f / 16 nm)^0.9']]],
+      ['tck_wire', 'Bank CSL/MDL/LDL delay', [[1, '∝ C × length (DreamRAM)'], [2, '∝ length² (unrepeated RC)']]],
+      ['bw_bg_cap', 'Bandwidth', [[0, 'DreamRAM peak'], [1, 'Capped at bank groups × per-group rate']]],
+      ['tsv_chain', 'Data TSV count', [[0, 'DreamRAM: one PC\'s MDL bits per channel'], [1, 'From the datapath: PCs × GBUS ÷ (GBUS→TSV)']]],
       ['ioctl_h', 'I/O-control height / BG', [[0, 'DreamRAM OD-ECC (1% of baseline bank)'], [25, '25 µm'], [50, '50 µm'], [100, '100 µm'], [150, '150 µm']]],
     ] },
     { group: 'Data bus', items: [
       ['atom_size', 'Atom size (bits)', [256]],
       ['pages_per_bgbus_mux', 'Pages / BGBUS mux', [1, 2]],
-      ['bgbuses_per_gbus', 'BGBUSes / GBUS', [2]],
-      ['tsv_dq_sd', 'TSV→DQ SerDes', [8]],
+      ['mdl_bgbus_sd', 'MDL→BGBUS SerDes', [1, 2, 4]],
+      ['bgbuses_per_gbus', 'BGBUSes / GBUS', [1, 2, 4, 8, 16]],
+      ['bgbus_gbus_sd', 'BGBUS→GBUS SerDes', [1, 2, 4]],
+      ['gbus_tsv_sd', 'GBUS→TSV SerDes', [[0.25, '¼ (4 TSVs per GBUS wire)'], [0.5, '½ (2 TSVs per GBUS wire)'], [1, '1'], [2, '2'], [4, '4']]],
+      ['tsv_dq_sd', 'TSV→DQ SerDes', [1, 2, 4, 8, 16, 32]],
     ] },
   ];
 
@@ -225,14 +234,22 @@
       { key: 'ck', label: 'Address clocks', note: '0/90/180/270° phases', perCh: 4 },
       { key: 'cke', label: 'Clock enable', note: 'CKE', perCh: 1 },
     ];
-    const tsv_data = [
+    // tsv_chain (extension): data TSVs follow the serdes chain, every pseudo-channel's GBUS ÷ gbus_tsv_sd,
+    // with MD-ECC and DBI in proportion. DreamRAM counts one pseudo-channel's MDL bits per channel.
+    const chain_data = p.pch * p.subchannels * pg.gbus_width / p.gbus_tsv_sd;
+    const tsv_data = p.tsv_chain ? [
+      { key: 'dq', label: 'Data (GBUS bits)', note: `${p.pch} PCs × ${pg.gbus_width * p.subchannels} GBUS bits ÷ ${p.gbus_tsv_sd} (GBUS→TSV)`, perCh: chain_data },
+      { key: 'ecc', label: 'MD-ECC', note: `md_ecc × ${chain_data} data`, perCh: t.md_ecc * chain_data },
+      { key: 'dbi', label: 'DBI', note: `(${t.dbi} − 1) × ${chain_data} data`, perCh: (t.dbi - 1) * chain_data },
+    ] : [
       // coupled rows share one muxed column datapath, so data TSVs follow the logical row
       { key: 'dq', label: 'Data (MDL bits)', note: `${p.ldls_mdls} MDLs × ${p.mats} MATs${p.coupled_rows > 1 ? ` / ${p.coupled_rows} coupled` : ''}`, perCh: p.ldls_mdls * p.mats / p.coupled_rows },
       { key: 'ecc', label: 'MD-ECC', note: 'DreamRAM counts 1 / md_ecc = 16', perCh: 1 / t.md_ecc },
       { key: 'dbi', label: 'DBI', note: `(${t.dbi} − 1) × ${pg.bgbus_width} BGBUS bits`, perCh: (t.dbi - 1) * pg.bgbus_width },
-      { key: 'sev', label: 'SEV + DQ flags', note: 'fixed 16', perCh: 16 },
-      { key: 'wck', label: 'WCK phases', note: 'fixed 8', perCh: 8 },
     ];
+    tsv_data.push(
+      { key: 'sev', label: 'SEV + DQ flags', note: 'fixed 16', perCh: 16 },
+      { key: 'wck', label: 'WCK phases', note: 'fixed 8', perCh: 8 });
     const sum = (l) => l.reduce((a, q) => a + q.perCh, 0);
     const cmd_tsv_count = p.channels * sum(tsv_cmd);
     const data_per_ch = sum(tsv_data);
@@ -276,7 +293,10 @@
     const res = t.pitch_bl / t.pitch_wl;
     const c_csl = t._c_csl * ts.capScale, c_mdl = t._c_mdl * ts.capScale, c_ldl = t._c_ldl * ts.capScale;
     const denom = (c_csl + 2 * c_mdl) * ref.bank_y + res * c_ldl * _mat_width;
-    const numer = (rc(pr.csl_ratio, t.c_within_csl_mdl) * c_csl + 2 * rc(pr.mdl_ratio, t.c_within_csl_mdl) * c_mdl) * bg.bank_y + res * c_ldl * mat_width;
+    // tck_wire = 2 (extension): unrepeated in-array lines, so each term's delay grows with length², not length
+    const lsq = p.tck_wire === 2;
+    const numer = (rc(pr.csl_ratio, t.c_within_csl_mdl) * c_csl + 2 * rc(pr.mdl_ratio, t.c_within_csl_mdl) * c_mdl) * bg.bank_y * (lsq ? bg.bank_y / ref.bank_y : 1)
+      + res * c_ldl * mat_width * (lsq ? mat_width / _mat_width : 1);
     // Shared BG-BUS window (tccd_bgbus extension): a repeated wire, delay linear in DreamRAM's bus length
     // (Hbm.wire_lengths 'bgbus+gbus' = non_tsv_y / 2) times its pitch-dependent capacitance (as in tCL),
     // calibrated so the baseline bank group's window equals the baseline tCK
@@ -284,11 +304,16 @@
     const pitch = bg.bank_x / (wc.bgbus * sg.pg.ind_pages / (p.pages_per_bgbus_mux * p.mdl_bgbus_sd) * p.vert_bg / 2 * pow(t.dbi, t.dbi_bgbus));
     const _pitch = ref.bank_x / (ref.n_bgbus / (B.pages_per_bgbus_mux * B.mdl_bgbus_sd) * B.vert_bg / 2 * pow(t.dbi, t.dbi_bgbus));
     const bgr = pitch / _pitch;
-    const tck_bank = 1 + (B._tck - 1) * numer / denom; // Hbm.core_tck: CSL + MDL over the bank, LDL over a MAT
-    const tck_bgbus = 1 + (B._tck - 1) * (sg.non_tsv_y / 2) * crat(bgr, t.c_within_sparse) / (ref.non_tsv_y / 2);
+    // Hbm.core_tck = driver time + (baseline tCK − driver time) × wire ratio, with DreamRAM's driver time a fixed
+    // 1 ns. Extensions: tck_fixed sets that time (as at the 16 nm HBM3 node), tck_fixed_scale scales it with
+    // the logic node like the peripheral tiles; the wire share keeps its baseline calibration either way.
+    const fixed = p.tck_fixed * (p.tck_fixed_scale ? pow(t.f / 0.016, t.logic_conf) : 1);
+    const wire = B._tck - p.tck_fixed;
+    const tck_bank = fixed + wire * numer / denom; // Hbm.core_tck: CSL + MDL over the bank, LDL over a MAT
+    const tck_bgbus = fixed + wire * (sg.non_tsv_y / 2) * crat(bgr, t.c_within_sparse) / (ref.non_tsv_y / 2);
     const core_tck = p.tccd_bgbus ? Math.max(tck_bank, tck_bgbus) : tck_bank;
     const dq_speed = p.mdl_bgbus_sd * p.bgbus_gbus_sd * p.gbus_tsv_sd * p.tsv_dq_sd * p.bgbuses_per_gbus;
-    const bw = wc.dq_count * dq_speed / (core_tck * (1 + t.md_ecc) * 8);
+    const bw_peak = wc.dq_count * dq_speed / (core_tck * (1 + t.md_ecc) * 8);
 
     const bl = t._c_bl_per_cell * p.mat_rows * t.iso_rows, _bl = t._c_bl_per_cell * t.mat_rows_ref * t.iso_rows;
     const full = (t._c_cell + bl + t._c_blsa) / (t._c_cell + _bl + t._c_blsa);
@@ -313,11 +338,22 @@
     const pumps = p.atom_size / sg.pg.min_atom;
     const tccdl = core_tck * pumps, tccds = core_tck / 2 * pumps;
     const bg_rate = p.atom_size / 8 / tccdl; // GB/s of data per bank group
-    const pc_rate = bw / (p.channels * p.pch); // GB/s per pseudo-channel at peak
+    const pc_rate = bw_peak / (p.channels * p.pch); // GB/s per pseudo-channel at peak
+    const bgs_needed = pc_rate / bg_rate, bgs_per_pc = p.horiz_bg * p.vert_bg;
+    // bw_bg_cap (extension): a pseudo-channel cannot outrun its bank groups, each one atom per tCCD_L
+    const bw = p.bw_bg_cap && bgs_per_pc < bgs_needed ? bw_peak * bgs_per_pc / bgs_needed : bw_peak;
+    // Per-pseudo-channel datapath as wires × Gb/s per wire (data + MD-ECC wires), level by level
+    const r_bg = p.mdl_bgbus_sd / core_tck, r_gbus = r_bg * p.bgbus_gbus_sd * p.bgbuses_per_gbus;
+    const levels = [
+      { key: 'bgbus', label: 'BG-BUS', wires: wc.bgbus, rate: r_bg },
+      { key: 'gbus', label: 'GBUS', wires: wc.gbus, rate: r_gbus },
+      { key: 'tsv', label: 'TSV', wires: wc.tsv, rate: r_gbus * p.gbus_tsv_sd },
+      { key: 'dq', label: 'DQ', wires: wc.dq_count / (p.channels * p.pch), rate: dq_speed / core_tck },
+    ];
     return {
-      core_tck, tck_bank, tck_bgbus, limiter: tck_bgbus > tck_bank ? 'BG-BUS window' : 'bank column path',
-      bw, trcd, trp, tcl, latency: tcl + trcd + trp, dq_rate: dq_speed / core_tck,
-      tccdl, tccds, bg_rate, pc_rate, bgs_needed: pc_rate / bg_rate, bgs_per_pc: p.horiz_bg * p.vert_bg,
+      core_tck, tck_bank, tck_bgbus, tck_fixed: fixed, limiter: p.tccd_bgbus && tck_bgbus > tck_bank ? 'BG-BUS window' : 'bank column path',
+      bw, bw_peak, trcd, trp, tcl, latency: tcl + trcd + trp, dq_rate: dq_speed / core_tck,
+      tccdl, tccds, bg_rate, pc_rate, bgs_needed, bgs_per_pc, levels,
     };
   }
 

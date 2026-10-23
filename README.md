@@ -280,6 +280,100 @@ Takeaways:
 - **Fewer bank groups per column is penalised.** DreamRAM's capacitance ratio assumes wire width grows with pitch, so a BG-BUS spread wider than the baseline's (fewer bank groups per column) gets *more* capacitance. That is why the HBM4 coupled design's BG-BUS stage (2.01 ns) slightly exceeds the baseline's despite a shorter bus.
 - **This is a pessimistic bound for long buses.** Real designs retime and source-synchronise these buses (Ryu et al.'s ADL / GBUS-SEL tracking), and Samsung ships a two-row HBM4 at 3.3 TB/s.
 
+## Extensions: column-cycle model, bank-group cap, TSV accounting
+
+These five options are implemented in both the port and `tools/export_floorplan.py` (`--set key=value`). All default to DreamRAM. With them off, every bundled example is unchanged. Checked on 83 points (3 presets and 80 random designs with these and the earlier extensions set at random): the discard code agrees on all 83, and the 60 that DreamRAM keeps match to ≤ 3.4e-16 in geometry, bandwidth, timing and TSV/DQ counts. DreamRAM raises on 11 others; the port flags all of them with the same status 6.
+
+**Column-cycle model** (`tck_fixed`, `tck_fixed_scale`, `tck_wire`)
+
+DreamRAM's core column cycle is `driver + (2 ns − driver) × wire ratio`. The driver time is a constant 1 ns ("minimum timing for CSL, LDL, MDL, and precharging"). The wire ratio is the CSL/MDL capacitance × bank height plus the LDL term, relative to the HBM3 baseline. So no bank can cycle faster than 1 ns, and the node never speeds anything up. The extensions change this:
+- `tck_fixed` (ns) sets the fixed share as at the 16 nm HBM3 node. Values: 1 (DreamRAM), 0.75, 0.5, 0.25, or 0 for pure wire scaling. The wire share becomes `2 ns − tck_fixed`, so the HBM3 baseline still cycles at 2 ns.
+- `tck_fixed_scale = 1` scales the fixed share with the logic node, `(f / 16 nm)^0.9`, as DreamRAM scales its peripheral tiles. On the 34/36 nm HBM4 array, 0.5 ns becomes 0.41 ns.
+- `tck_wire = 2` treats the in-bank CSL/MDL/LDL lines as unrepeated RC wires, so their delay grows with length² instead of length × capacitance.
+
+The fixed share applies to both column stages (bank path and, with `tccd_bgbus`, the BG-BUS window). The wire-length law applies to the bank path only, since the BG-BUS is modelled as repeated.
+
+**Bank-group cap** (`bw_bg_cap = 1`)
+
+Bandwidth is capped at bank groups × one atom per tCCD_L per pseudo-channel. Without the cap, DreamRAM's peak assumes `bgbuses_per_gbus` groups exist whether or not they do. The metrics panel shows the uncapped peak beside the capped value.
+
+**TSV accounting** (`tsv_chain = 1`)
+
+DreamRAM counts each channel's data TSVs as `ldls_mdls × mats`, which is one pseudo-channel's MDL bits. That count ignores `gbus_tsv_sd` and the second pseudo-channel, so the TSV region doesn't respond to the TSV serialization ratio. With `tsv_chain`, data TSVs are `pch × GBUS bits / gbus_tsv_sd` per channel, with MD-ECC and DBI in proportion. `gbus_tsv_sd` may then go below 1: ½ means two TSVs per GBUS wire, each at half the rate.
+
+On the HBM3 baseline this doubles the data TSVs per die (5,248 → 10,112) and the TSV region (12.7 → 22.0 mm²). On the HBM4 coupled design they go 10,496 → 20,224 and 25.0 → 43.7 mm².
+
+**Wider serdes choices.** The parameter panel now offers:
+- `mdl_bgbus_sd`: 1–4
+- `bgbuses_per_gbus`: 1–16
+- `bgbus_gbus_sd`: 1–4
+- `gbus_tsv_sd`: ¼–4
+- `tsv_dq_sd`: 1–32
+
+The panel also lists the per-pseudo-channel datapath as wires × Gb/s per wire at each level: BG-BUS, GBUS, TSV, DQ.
+
+## 32 Gb/s exploration: 32 data DQs per pseudo-channel
+
+`node tools/sweep_pin_rate.js [--rate 32] [--max-die-mm 20] [--csv out.csv]` asks which bank organisations reach a target pin rate. It uses the port.
+
+**Fixed:**
+- HBM4 34/36 nm array, 1 SID, 32 channels on 4 dies, 2 pseudo-channels;
+- 16 GB per stack, 1 KiB host rows, 256-bit atoms, one channel row;
+- `tccd_bgbus`, `bw_bg_cap` and `tsv_chain` on.
+
+**Swept** (1,206 valid designs): bank groups (2–8 vertical × 1–2 side by side), banks per group, MAT size and count, MDLs, MDL/CSL routing, BLSA/BRVSA and coupled rows. Subarrays per bank follow from the capacity.
+
+**How each design is set up:**
+- It keeps 32 data DQs per pseudo-channel, with all its bank groups alternating onto the GBUS. Its pin rate is then 8 × bank groups / tCCD_L (Gb/s, per atom pump).
+- The GBUS→TSV vs. TSV→DQ split leaves the pin rate unchanged and only moves TSV count and area, so it is reported separately.
+- The HBM4 reference is the coupled-row design. With chain-counted TSVs its die is 174.0 mm².
+
+| Column-cycle model | HBM4 tCCD_L | Fastest tCCD_L | Designs ≥ 32 Gb/s | Smallest such design | Its tCCD_L | Die vs. HBM4 |
+| --- | --- | --- | --- | --- | --- | --- |
+| DreamRAM (1 ns fixed, C × L) | 2.01 ns | 1.92 | 28 | 8 × 2 BGs × 2 banks, 16 × 512-BL MATs, 1024 WL | 3.49 (BG-BUS) | 187.0 mm² (+7%) |
+| 0.5 ns fixed, node-scaled, C × L | 1.92 | 1.78 | 8 | 8 × 2 BGs × 2 banks, 32 × 256-BL MATs | 3.71 (BG-BUS) | 196.2 (+13%) |
+| 0.5 ns fixed, node-scaled, L² | 1.92 | 1.75 | 8 | same | 3.71 (BG-BUS) | 196.2 (+13%) |
+| No fixed time, C × L | 2.02 | 1.84 | 0 | | | |
+| 0.5 ns fixed, node-scaled, bank path only (no BG-BUS window) | 1.81 | 0.91 | 248 | 8 × 1 BGs × 2 banks, 16 × 1024-BL MATs, coupled × 2, 32 MDLs | 1.50 | 163.2 (−6%) |
+
+Takeaways:
+- **At 16 GB the fixed share barely matters.** Iso-capacity keeps banks large, so the wire share dominates, and no model gets a 16 GB bank much below about 1.8 ns. Removing the fixed time entirely makes things slightly worse: the wire share then takes the full 2 ns × ratio, and these ratios are near or above 1.
+- **32 Gb/s needs about 8–16 bank groups per pseudo-channel streaming at once,** against 2 today. With the BG-BUS window enforced it takes 16: stacking 8 groups per column lengthens the shared bus, so tCCD_L grows to 3.5–3.8 ns and eats most of the extra concurrency.
+- **The answer hinges on the BG-BUS window.** With the bank path alone, the same 16 banks per pseudo-channel regrouped as 8 groups × 2 banks reach 43 Gb/s at a 6% smaller die. The BG-BUS stage is a pessimistic bound for long buses (see the extension above), so the truth for a retimed bus lies between these two rows.
+- **TSVs are an area knob, not a rate limit.** For the smallest DreamRAM-model design:
+
+| GBUS→TSV | TSVs per PC × rate | TSV→DQ | Data TSVs per die | TSV region | Die |
+| --- | --- | --- | --- | --- | --- |
+| 8 | 34 × 36.7 Gb/s | 1:1 | 3,200 | 11.5 mm² | 154.3 mm² |
+| 2 | 136 × 9.2 | 4:1 | 10,496 | 25.5 | 168.3 |
+| 1 | 272 × 4.6 | 8:1 | 20,224 | 44.2 | 187.0 |
+| ½ | 544 × 2.3 | 16:1 | 39,680 | 81.6 | 224.4 |
+| ¼ | 1,088 × 1.15 | 32:1 | 78,592 | 156.3 | 299.1 |
+
+  If HBM4 carries 4× HBM3's TSVs with 2× its DQs, that is about the ½ row: 4 × 10,112 chain-counted HBM3 TSVs ≈ 40,400 per die. Those TSVs would carry 32 Gb/s pins at about 2.3 Gb/s each. DreamRAM's TSV region uses a 40 µm µbump pitch, so this area is an upper bound for finer-pitch hybrid bonding.
+
+**Bundled designs** (**Example designs → 32 Gb/s exploration**)
+
+Five passing designs, exported with DreamRAM:
+- Each has 16 GB, 2,176 DQs (34 per pseudo-channel), GBUS→TSV 1 and all bank groups alternating onto the GBUS.
+- Each was exported with the die limit relaxed to 19.5 mm.
+- "DreamRAM tCCD_L" keeps the 1 ns fixed share and enforces the BG-BUS window (`tccd_bgbus` = 1). "Bank path only" uses a 0.5 ns node-scaled fixed share and `tccd_bgbus` = 0.
+- Pin rates are each design's maximum. At exactly 32 Gb/s the core would run slower and draw proportionally less power.
+
+| | DreamRAM tCCD_L, smallest die | DreamRAM tCCD_L, lowest latency | Bank path only, smallest die | Bank path only, 32 banks / PC | Bank path only, lowest latency |
+| --- | --- | --- | --- | --- | --- |
+| Bank groups per PC (vertical × side by side), banks each | 8 × 2, 2 | 8 × 2, 2 | 8 × 1, 2 | 4 × 2, 4 | 8 × 2, 2 |
+| Bank | 8 × 1024 WL, 16 × 512-BL MATs, 16 MDLs, 2 layers | 16 × 512 WL, 32 × 256-BL MATs, 8 MDLs, BRVSA | 8 × 1024 WL, 16 × 1024-BL MATs coupled × 2, 32 MDLs, 2 layers | 8 × 1024 WL, 16 × 512-BL MATs, 16 MDLs, 2 layers | 32 × 256 WL, 16 × 512-BL MATs, 8 MDLs, BRVSA, 2 layers |
+| tCCD_L | 3.49 ns (BG-BUS) | 3.39 ns (BG-BUS) | 1.50 ns | 1.52 ns | 3.92 ns (2 pumps) |
+| Max pin rate / bandwidth | 36.7 Gb/s · 9.4 TB/s | 37.8 · 9.7 | 42.8 · 10.9 | 42.2 · 10.8 | 32.6 · 8.4 |
+| Die | 17.23 × 10.85 mm | 18.83 × 11.11 | 14.30 × 11.41 | 17.23 × 10.83 | 17.23 × 11.94 |
+| Row-miss latency | 127.7 ns | 95.5 | 103.0 | 94.4 | 63.2 |
+| Energy / bit (closed / stream) | 4.19 / 2.94 pJ | 3.78 / 2.89 | 4.33 / 2.26 | 3.35 / 2.10 | 3.01 / 2.30 |
+| Worst-case power | 315 W | 292 | 379 | 290 | 201 |
+| Per PC: BG-BUS · GBUS = TSV · DQ (wires × Gb/s) | 272 × 0.29 · 272 × 4.58 · 34 × 36.7 | 272 × 0.29 · 272 × 4.72 · 34 × 37.8 | 272 × 0.67 · 272 × 5.35 · 34 × 42.8 | 272 × 0.66 · 272 × 5.27 · 34 × 42.2 | 136 × 0.51 · 136 × 8.16 · 34 × 32.6 |
+
+For comparison, the HBM4 coupled design draws 51 W at 2 TB/s with the BG-BUS extension, at 3.12 / 1.79 pJ/b. So 4–5× the bandwidth costs more energy per bit as well as more power, and a 32 Gb/s stack would draw about 200–380 W in DreamRAM's worst case. Latency grows because these designs stack more bank groups per column and use taller 1024-WL MATs. Only the 256-WL BRVSA design keeps HBM4's 63 ns.
+
 ## Drawing choices (not specified by DreamRAM)
 
 DreamRAM's model fixes the size of every block, but not always where each block sits. Where it does not, the viewer makes these choices:
@@ -310,4 +404,5 @@ js/examples.js     bundled DreamRAM exports (generated)
 tools/export_floorplan.py   export a design's geometry + metrics from DreamRAM
 tools/build_examples.py     bundle examples/*.json into js/examples.js
 tools/serve.py              no-cache local server
+tools/sweep_pin_rate.js     iso-capacity sweep for a target pin rate (uses the port)
 ```

@@ -589,12 +589,14 @@
     const ex = app.exportActive ? app.exportData.metrics || {} : {};
     const rows = [
       ['Capacity (stack)', fmt(m.capacity, 3) + ' GB'],
-      ['Bandwidth', tm ? fmt(tm.bw, 1) + ' GB/s' : '–'],
+      ['Bandwidth', tm ? fmt(tm.bw, 1) + ' GB/s' + (tm.bw < tm.bw_peak - 1e-9 ? ` <small>capped by bank groups (peak ${fmt(tm.bw_peak, 1)})</small>` : '') : '–'],
       ['Row-miss latency', tm ? fmt(tm.latency, 1) + ' ns <small>tCL+tRCD+tRP</small>' : '–'],
       ['DQ rate', tm ? fmt(tm.dq_rate, 2) + ' Gb/s' : '–'],
       ...(tm ? [
         ['tCCD_L / tCCD_S', `${fmt(tm.tccdl, 2)} / ${fmt(tm.tccds, 2)} ns`],
         ['Column cycle stages', `bank ${fmt(tm.tck_bank, 2)} · BG-BUS ${fmt(tm.tck_bgbus, 2)} ns <small>${p.tccd_bgbus ? 'limited by ' + tm.limiter : (tm.tck_bgbus > tm.tck_bank ? 'BG-BUS slower, not enforced' : 'bank path sets it')}</small>`],
+        ['Fixed share of cycle', `${fmt(tm.tck_fixed, 2)} ns <small>driver / sense / precharge, not wire-scaled</small>`],
+        ...tm.levels.map((l) => [`${l.label} / PC`, `${fmt(l.wires, 0)} × ${fmt(l.rate, 2)} Gb/s <small>= ${fmt(l.wires * l.rate / 8, 1)} GB/s</small>`]),
         ['Per bank group', `${fmt(tm.bg_rate, 1)} GB/s <small>${p.atom_size} b / tCCD_L</small>`],
         ['Per pseudo-channel', `${fmt(tm.pc_rate, 1)} GB/s <small>needs ${fmt(tm.bgs_needed, 1)} BGs, has ${tm.bgs_per_pc}</small>`
           + (tm.bgs_per_pc < tm.bgs_needed - 1e-9 ? ' <span class="warn" title="Peak bandwidth assumes bank groups alternating every tCCD_S; with fewer groups a pseudo-channel tops out at bank groups × per-group rate.">⚠</span>' : '')],
@@ -749,12 +751,19 @@
     hbm5_2bg_hbm4_latency: 'HBM5 · HBM4 latency (63.6 ns) · 1 KiB rows, 512-WL MATs · 17.2 × 11.5 mm · 8.07 Gb/s',
     hbm5_2bg_low_latency: 'HBM5 · lowest latency (57.3 ns) · BRVSA, bank groups side by side · 34.5 × 5.8 mm · 9.12 Gb/s',
     hbm5_2bg_hbm4_mats: 'HBM5 · HBM4 MATs + coupled 2 KiB wordline · 30.2 × 7.1 mm · 9.79 Gb/s',
+    g32_min_die_dreamram: '32G · DreamRAM tCCD_L · smallest die · 8×2 BGs × 2 banks · 17.2 × 10.9 mm · 36.7 Gb/s',
+    g32_low_latency_dreamram: '32G · DreamRAM tCCD_L · lowest latency (95 ns) · BRVSA · 18.8 × 11.1 mm · 37.8 Gb/s',
+    g32_min_die_bankpath: '32G · bank path only · smallest die · 8 BGs × 2 banks, coupled · 14.3 × 11.4 mm · 42.8 Gb/s',
+    g32_32banks_bankpath: '32G · bank path only · 4×2 BGs × 4 banks (32 / PC) · 17.2 × 10.8 mm · 42.2 Gb/s',
+    g32_low_latency_bankpath: '32G · bank path only · lowest latency (63 ns) · 256-WL MATs, BRVSA · 17.2 × 11.9 mm · 32.6 Gb/s',
   };
   exSel.innerHTML = '<option value="">Example designs…</option>'
-    + '<optgroup label="DreamRAM exports">' + Object.keys(EX).filter((k) => !k.startsWith('hbm5_')).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
+    + '<optgroup label="DreamRAM exports">' + Object.keys(EX).filter((k) => !k.startsWith('hbm5_') && !k.startsWith('g32_')).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
     // HBM5: 16 channels/die, 4096 DQs, 2 bank groups × 8 banks, half the rows per channel of our HBM4,
     // evaluated with the BG-BUS-limited tCCD_L extension (README)
     + '<optgroup label="HBM5 exploration">' + Object.keys(exLabels).filter((k) => k.startsWith('hbm5_') && EX[k]).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
+    // 32 data DQs per pseudo-channel at >= 32 Gb/s, 16 GB, from tools/sweep_pin_rate.js (README)
+    + '<optgroup label="32 Gb/s exploration">' + Object.keys(exLabels).filter((k) => k.startsWith('g32_') && EX[k]).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
     + '<optgroup label="Presets (in-browser model)">' + Object.entries(DR.DESIGN_PRESETS).map(([k, d]) => `<option value="pre:${k}">${d.label}</option>`).join('') + '</optgroup>';
   exSel.onchange = () => {
     const [kind, k] = exSel.value.split(':');
