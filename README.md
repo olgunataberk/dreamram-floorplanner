@@ -47,6 +47,7 @@ Each level dims everything outside the focused component. Drawing switches autom
 The right panel holds:
 - every DreamRAM design parameter, with the default sweep ranges;
 - live metrics: capacity, bandwidth, row-miss latency, die size, stack area, cell efficiency, and more;
+- per-bank-group data rate: one 256-bit atom per tCCD_L (DreamRAM's `tccdl` = core tCK × pumps). Same-group column commands share the group's I/O control and BG-BUS, so a pseudo-channel reaches DreamRAM's peak only with groups alternating every tCCD_S. The panel shows how many groups that takes (2 in every bundled design except the 8-pump subchannel one) and flags designs with fewer. DreamRAM's own bandwidth assumes the groups are there; its `bgbuses_per_gbus` = 2 factor does not check `vert_bg × horiz_bg`;
 - an exact die-area breakdown;
 - the list of DreamRAM filters that would discard the current design (`dreamram.simulate()` status codes 1–15).
 

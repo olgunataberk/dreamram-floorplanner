@@ -528,7 +528,8 @@
       case 'die': rows.push(...cap(m.banksPerDie), ['Banks', m.banksPerDie], ['Cell efficiency', fmt(100 * m.cellEff, 1) + ' %'], ['Channels', `CH${n.chBase}–CH${n.chBase + p.ch_per_die - 1}`]); break;
       case 'channel': rows.push(...cap(p.pch * p.horiz_bg * p.vert_bg * p.banks), ['Pseudo-channels', p.pch], ['Banks', p.pch * p.horiz_bg * p.vert_bg * p.banks], ['DQs', per(m.wires.dq_count / p.channels)]); break;
       case 'pch': rows.push(...cap(p.horiz_bg * p.vert_bg * p.banks), ['Bank groups', p.horiz_bg * p.vert_bg], ['Banks', p.horiz_bg * p.vert_bg * p.banks], ['DQs', per(m.wires.dq_count / p.channels / p.pch)]); break;
-      case 'bg': rows.push(...cap(p.banks), ['Banks', `${p.banks} (${Math.ceil(p.banks / 2)} | I/O ctrl | ${p.banks - Math.ceil(p.banks / 2)})`], ['BG-BUS width', m.wires.bgbus + ' b + DBI']); break;
+      case 'bg': rows.push(...cap(p.banks), ['Banks', `${p.banks} (${Math.ceil(p.banks / 2)} | I/O ctrl | ${p.banks - Math.ceil(p.banks / 2)})`], ['BG-BUS width', m.wires.bgbus + ' b + DBI'],
+        ...(m.timing ? [['Data rate', `${fmt(m.timing.bg_rate, 1)} GB/s <small>one atom / tCCD_L = ${fmt(m.timing.tccdl, 2)} ns</small>`], ['Share of PC peak', fmt(100 * m.timing.bg_rate / m.timing.pc_rate, 0) + ' %']] : [])); break;
       case 'ioctl': rows.push(['Serves', `${p.banks} banks (${Math.ceil(p.banks / 2)} above, ${p.banks - Math.ceil(p.banks / 2)} below)`], ['Bits / access', `${ecc.active * p.ldls_mdls} (${ecc.active} MATs × ${p.ldls_mdls})`], ['BG-BUS out', m.wires.bgbus + ' b + DBI'], ['Height', DR.fmtLen(s.od_ecc_h) + (p.ioctl_h > 0 ? ' (extension)' : ' (DreamRAM OD-ECC)')]); break;
       case 'mbus': rows.push(['GBUS sets', `${p.bgbuses_per_gbus} × ${m.wires.gbus} b (ADL)`], ['Bank groups in', n.half === 'top' ? Math.ceil(p.vert_bg / 2) : p.vert_bg - Math.ceil(p.vert_bg / 2)]); break;
       case 'bank': rows.push(...cap(1), ['bank_x × bank_y', `${fmt(b.bank_x, 1)} × ${fmt(b.bank_y, 1)} µm`], ['Subarrays', `${p.subarrays} (+${b.rows - p.subarrays} rows)`], ['MATs / subarray', `${p.mats} + ${b.ecc_mats} ECC`], ['SWD stripes', b.swd_count], ['Bank cell eff.', fmt(100 * b.cell_area_bank / (b.bank_x * b.bank_y), 1) + ' %'], ['Row page', `${m.pages.page_bits / 8} B × ${m.pages.ind_row_pages}`]); break;
@@ -591,6 +592,12 @@
       ['Bandwidth', tm ? fmt(tm.bw, 1) + ' GB/s' : '–'],
       ['Row-miss latency', tm ? fmt(tm.latency, 1) + ' ns <small>tCL+tRCD+tRP</small>' : '–'],
       ['DQ rate', tm ? fmt(tm.dq_rate, 2) + ' Gb/s' : '–'],
+      ...(tm ? [
+        ['tCCD_L / tCCD_S', `${fmt(tm.tccdl, 2)} / ${fmt(tm.tccds, 2)} ns`],
+        ['Per bank group', `${fmt(tm.bg_rate, 1)} GB/s <small>${p.atom_size} b / tCCD_L</small>`],
+        ['Per pseudo-channel', `${fmt(tm.pc_rate, 1)} GB/s <small>needs ${fmt(tm.bgs_needed, 1)} BGs, has ${tm.bgs_per_pc}</small>`
+          + (tm.bgs_per_pc < tm.bgs_needed - 1e-9 ? ' <span class="warn" title="Peak bandwidth assumes bank groups alternating every tCCD_S; with fewer groups a pseudo-channel tops out at bank groups × per-group rate.">⚠</span>' : '')],
+      ] : []),
     ];
     if (ex.metric_e_per_bit_closed !== undefined) {
       rows.push(['Energy/bit (closed)', fmt(ex.metric_e_per_bit_closed, 3) + ' pJ'], ['Energy/bit (stream)', fmt(ex.metric_e_per_bit_seq, 3) + ' pJ'], ['Worst-case power', fmt(ex.worst_power_w, 1) + ' W']);

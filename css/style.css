@@ -161,6 +161,7 @@ select {
 .kv .k { color: var(--dim); }
 .kv .v { font-family: var(--mono); font-size: 12px; text-align: right; }
 .kv .v small { color: var(--dim); }
+.kv .v .warn { color: var(--bad); cursor: help; }
 .info .title { font-weight: 600; margin-bottom: 2px; }
 .info .type { color: var(--dim); font-size: 12px; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
 .info .note { color: var(--dim); font-size: 12px; margin-top: 6px; }

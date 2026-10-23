@@ -300,7 +300,18 @@
     const _t_die_y = (B._tcl - 2 * _dies * rise * t._r_load * tsv_c / 1000) / 2;
     const tcl = (crat(bgr * (B.bgbus_gbus_sd * B.gbus_tsv_sd) / (p.bgbus_gbus_sd * p.gbus_tsv_sd), t.c_within_sparse) + crat(bgr, t.c_within_sparse))
       * _t_die_y * (sg.die_h - bg.bank_y) / (ref.die_h - ref.bank_y) + 2 * sg.dies * rise * t._r_load * tsv_c / 1000;
-    return { core_tck, bw, trcd, trp, tcl, latency: tcl + trcd + trp, dq_rate: dq_speed / core_tck };
+    // Hbm.tccdl / tccds: 4 and 2 peripheral clocks (core_tck / 4) per pump. Same-bank-group column
+    // commands wait tCCD_L for the group's shared I/O control / BG-BUS path, so one bank group delivers
+    // one atom per tCCD_L; the pseudo-channel's peak (which includes bgbuses_per_gbus) needs groups
+    // alternating every tCCD_S.
+    const pumps = p.atom_size / sg.pg.min_atom;
+    const tccdl = core_tck * pumps, tccds = core_tck / 2 * pumps;
+    const bg_rate = p.atom_size / 8 / tccdl; // GB/s of data per bank group
+    const pc_rate = bw / (p.channels * p.pch); // GB/s per pseudo-channel at peak
+    return {
+      core_tck, bw, trcd, trp, tcl, latency: tcl + trcd + trp, dq_rate: dq_speed / core_tck,
+      tccdl, tccds, bg_rate, pc_rate, bgs_needed: pc_rate / bg_rate, bgs_per_pc: p.horiz_bg * p.vert_bg,
+    };
   }
 
   // dreamram.simulate() pre-filters and die-size filters, in the same order and with the same codes
@@ -410,6 +421,7 @@
       add('tCL', m.timing.tcl, ex.metrics.tcl);
       add('tRCD', m.timing.trcd, ex.metrics.trcd);
       add('tRP', m.timing.trp, ex.metrics.trp);
+      add('tCCD_L', m.timing.tccdl, ex.metrics.tccdl);
     }
     return rows;
   };
