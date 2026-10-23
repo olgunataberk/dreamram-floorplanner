@@ -6,11 +6,15 @@
   <title>DreamRAM Floorplan Viewer</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css?v=22">
+  <link rel="stylesheet" href="css/style.css?v=24">
 </head>
 <body>
   <header class="topbar">
     <div class="brand"><span class="logo">▦</span> DreamRAM <span class="dim">Floorplan Viewer</span></div>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="floorplan" class="on" aria-selected="true">Floorplan</button>
+      <button role="tab" data-tab="timing" aria-selected="false">Timing</button>
+    </div>
     <button id="btn-up" class="icon-btn" title="Up one level (Backspace / Esc)">↑ Up</button>
     <nav id="crumbs" class="crumbs"></nav>
     <div class="spacer"></div>
@@ -35,6 +39,7 @@
       <div id="tip" class="tip" hidden></div>
       <div class="hint">Click: select · Double-click: go down · Backspace/Esc: go up · Scroll: zoom · Drag: pan · F: fit · L: labels</div>
       <div id="status" class="status"></div>
+      <div id="timing" class="timing" hidden></div>
     </div>
 
     <aside class="panel right">
@@ -74,10 +79,11 @@
     </aside>
   </main>
 
-  <script src="js/model.js?v=22"></script>
-  <script src="js/floorplan.js?v=22"></script>
-  <script src="js/render.js?v=22"></script>
-  <script src="js/examples.js?v=22"></script>
-  <script src="js/app.js?v=22"></script>
+  <script src="js/model.js?v=24"></script>
+  <script src="js/floorplan.js?v=24"></script>
+  <script src="js/render.js?v=24"></script>
+  <script src="js/timing.js?v=24"></script>
+  <script src="js/examples.js?v=24"></script>
+  <script src="js/app.js?v=24"></script>
 </body>
 </html>

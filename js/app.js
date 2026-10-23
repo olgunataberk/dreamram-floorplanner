@@ -80,6 +80,7 @@
     selectedDieIdx: 0,
     exportData: null,
     exportActive: false,
+    tab: 'floorplan',
     _raf: 0,
     requestDraw() {
       if (this._raf) return;
@@ -594,7 +595,11 @@
       ['DQ rate', tm ? fmt(tm.dq_rate, 2) + ' Gb/s' : '–'],
       ...(tm ? [
         ['tCCD_L / tCCD_S', `${fmt(tm.tccdl, 2)} / ${fmt(tm.tccds, 2)} ns`],
-        ['Column cycle stages', `bank ${fmt(tm.tck_bank, 2)} · BG-BUS ${fmt(tm.tck_bgbus, 2)} ns <small>${p.tccd_bgbus ? 'limited by ' + tm.limiter : (tm.tck_bgbus > tm.tck_bank ? 'BG-BUS slower, not enforced' : 'bank path sets it')}</small>`],
+        ...(tm.staged ? [
+          ['Bank cycle (serial)', `${tm.pumps > 1 ? tm.pumps + ' × ' : ''}${fmt(tm.staged.bank, 2)} ns <small>${Object.entries(tm.staged.parts).map(([k, v]) => DR.STAGE_LABELS[k].split(' ')[0] + ' ' + fmt(v, 2)).join(' · ')}</small>`],
+          ['Shared BG stage', `${fmt(tm.staged.shared, 2)} ns <small>${Object.entries(tm.staged.sharedParts).map(([k, v]) => DR.STAGE_LABELS[k] + ' ' + fmt(v, 2)).join(' · ')}</small>`],
+          ['tCCD_L set by', `${tm.staged.limiter} <small>staged model, ${fmt(tm.staged.fo4 * 1000, 0)} ps / FO4-eq · see Timing tab</small>`],
+        ] : [['Column cycle stages', `bank ${fmt(tm.tck_bank, 2)} · BG-BUS ${fmt(tm.tck_bgbus, 2)} ns <small>${p.tccd_bgbus ? 'limited by ' + tm.limiter : (tm.tck_bgbus > tm.tck_bank ? 'BG-BUS slower, not enforced' : 'bank path sets it')}</small>`]]),
         ['Fixed share of cycle', `${fmt(tm.tck_fixed, 2)} ns <small>driver / sense / precharge, not wire-scaled</small>`],
         ...tm.levels.map((l) => [`${l.label} / PC`, `${fmt(l.wires, 0)} × ${fmt(l.rate, 2)} Gb/s <small>= ${fmt(l.wires * l.rate / 8, 1)} GB/s</small>`]),
         ['Per bank group', `${fmt(tm.bg_rate, 1)} GB/s <small>${p.atom_size} b / tCCD_L</small>`],
@@ -702,8 +707,31 @@
     renderValidation();
     renderLayers();
     renderInfo();
+    renderTimingTab();
     writeHash();
   }
+
+  // ---------- tabs: floorplan / timing ----------
+  const timingState = { scenario: 'same_bg', theme: app.theme };
+  function renderTimingTab() {
+    if (app.tab !== 'timing' || !app.model) return;
+    timingState.theme = app.theme;
+    DR.renderTiming($('timing'), app.model, timingState);
+  }
+  function setTab(tab) {
+    app.tab = tab;
+    document.body.classList.toggle('tab-timing', tab === 'timing');
+    $('timing').hidden = tab !== 'timing';
+    document.querySelectorAll('.tabs [data-tab]').forEach((b) => {
+      b.classList.toggle('on', b.dataset.tab === tab);
+      b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+    });
+    try { localStorage.setItem('dreamram-tab', tab); } catch (e) { /* storage unavailable */ }
+    if (tab === 'timing') renderTimingTab();
+    else { R.resize(); app.requestDraw(); }
+  }
+  document.querySelectorAll('.tabs [data-tab]').forEach((b) => (b.onclick = () => setTab(b.dataset.tab)));
+  new ResizeObserver(() => renderTimingTab()).observe($('timing'));
 
   // ---------- exports / examples ----------
   function techKeyFor(t) {
@@ -801,7 +829,7 @@
     app.theme = app.theme === 'dark' ? 'light' : 'dark';
     document.documentElement.dataset.theme = app.theme;
     try { localStorage.setItem('dreamram-theme', app.theme); } catch (e) { /* storage unavailable */ }
-    renderLayers(); updateArea(); renderTree(); renderInfo(); app.requestDraw();
+    renderLayers(); updateArea(); renderTree(); renderInfo(); renderTimingTab(); app.requestDraw();
   };
 
   // ---------- URL hash keeps the design shareable ----------
@@ -833,4 +861,5 @@
   R.resize();
   rebuild(false);
   ro.observe(cv);
+  try { if (localStorage.getItem('dreamram-tab') === 'timing') setTab('timing'); } catch (e) { /* storage unavailable */ }
 })();

@@ -46,10 +46,25 @@ Two extensions that are not part of DreamRAM can also be --set (both default to 
   tsv_chain=1      count data TSVs from the serdes chain: every pseudo-channel's GBUS bits / gbus_tsv_sd,
                    MD-ECC and DBI in proportion (DreamRAM counts one pseudo-channel's MDL bits per channel).
                    gbus_tsv_sd may then be below 1 (more TSVs than GBUS wires, each slower).
+  tccd_staged=1    staged column-cycle model: tCCD_L = max(pumps x serial bank cycle, shared bank-group stage).
+                   Bank cycle = CSL rise + LDL develop + MDL develop + IOSA resolve + equalize; shared stage =
+                   OD-ECC/DBI, BG-BUS window and, per mdl_share, a shared IOSA or MDL line. Each stage is a device
+                   delay (FO4 units, growing with the line capacitance it drives) plus distributed wire RC from
+                   DreamRAM's geometry. One device constant is calibrated so the HBM3 baseline (16 nm, IOSAs
+                   shared at the I/O control) is 2 ns; device delay scales with (f / 16 nm)^logic_scale_conf.
+                   Overrides tccd_bgbus and the tck_* options.
+  mdl_share=N      0: IOSAs per bank at the bank edge (MDL = bank height). 1 (default): IOSAs shared by the bank
+                   group at its I/O control, MDLs run from the farthest bank. 2: one MDL line per side shared by
+                   its banks, so the MDL phase is a shared stage.
+  col_mid=1        column decoder (and per-bank IOSAs) in the middle of the bank instead of at its edge, so CSLs
+                   and per-bank MDLs span half the bank height (staged model only; the drawn floorplan is unchanged).
+  od_ecc_logic=0   leave the OD-ECC/DBI logic out of the shared stage (pre-HBM3 devices).
 """
 import argparse
+import contextlib
 import csv
 import functools
+import io
 import json
 import os
 import sys
@@ -60,7 +75,8 @@ PARAMS = ['sids', 'channels', 'ch_per_die', 'pch', 'horiz_bg', 'vert_bg', 'banks
           'salp_all', 'pages_per_bgbus_mux', 'mdl_bgbus_sd', 'bgbuses_per_gbus', 'bgbus_gbus_sd',
           'gbus_tsv_sd', 'tsv_dq_sd', 'atom_size']
 EXTENSIONS = {'coupled_rows': 1, 'coupled_lsb': 0, 'edge_pairing': 0, 'ioctl_h': 0, 'channel_rows': 1, 'tccd_bgbus': 0,
-              'tck_fixed': 1, 'tck_fixed_scale': 0, 'tck_wire': 1, 'bw_bg_cap': 0, 'tsv_chain': 0}  # coupled_lsb only labels rows
+              'tck_fixed': 1, 'tck_fixed_scale': 0, 'tck_wire': 1, 'bw_bg_cap': 0, 'tsv_chain': 0,
+              'tccd_staged': 0, 'mdl_share': 1, 'col_mid': 0, 'od_ecc_logic': 1}  # coupled_lsb only labels rows
 
 
 METRICS = ['capacity_gbytes', 'bw_gbytes', 'worst_latency_ns', 'metric_e_per_bit_closed',
@@ -102,7 +118,8 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
 
     Model = extended_hbm(Hbm, overrides.get('coupled_rows', 1), overrides.get('edge_pairing', 0), overrides.get('ioctl_h', 0),
                          overrides.get('channel_rows', 1), overrides.get('tccd_bgbus', 0),
-                         **{k: overrides.get(k, EXTENSIONS[k]) for k in ('tck_fixed', 'tck_fixed_scale', 'tck_wire', 'bw_bg_cap', 'tsv_chain')})
+                         **{k: overrides.get(k, EXTENSIONS[k]) for k in ('tck_fixed', 'tck_fixed_scale', 'tck_wire', 'bw_bg_cap', 'tsv_chain',
+                                                                         'tccd_staged', 'mdl_share', 'col_mid', 'od_ecc_logic')})
 
     def make(p, ref, cls=Hbm):
         kw = dict(sids=p['sids'], channels=p['channels'], ch_per_die=p['ch_per_die'], pch=p['pch'],
@@ -141,6 +158,8 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
     p.update({k: v for k, v in overrides.items() if k not in EXTENSIONS})
     dram = make(p, ref, Model)
     dram._bgbus_len_ref = bgbus_len_ref  # baseline BG-BUS length for tccd_bgbus
+    if overrides.get('tccd_staged'):
+        dram._staged_ref = staged_reference(dreamram_dir, mem_json)
 
     # run DreamRAM's own simulate() for the metrics and its discard filters
     d = dict(b, **p)
@@ -160,8 +179,83 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
 _BASELINE_REFS = {}
 
 
+# ---- staged column-cycle model (tccd_staged) ---------------------------------------------------------------
+# Device delays in FO4-equivalents at the reference load: (fixed, load-dependent). The load-dependent part scales
+# with the line's total capacitance relative to the calibration design. js/model.js mirrors this table.
+STAGED = {
+    'csl': (4, 4),     # column decoder + CSL driver charging the CSL
+    'ldl': (1, 4),     # column switch on, BLSA develops the LDL pair
+    'mdl': (2, 6),     # helper flip-flop at the LDL/MDL junction drives the MDL pair
+    'iosa': (4, 0),    # I/O (global) sense amp resolves
+    'eq': (1, 4),      # MDL / LDL equalise back to mid-rail before the next CSL
+    'iosa_shared': 6,  # shared IOSA occupancy per pump (resolve + precharge), mdl_share >= 1
+    'ecc': 24,         # OD-ECC syndrome / decode / correct + DBI, once per atom (Ryu et al.: inside tCCD_L)
+    'bus_launch': 4,   # BG-BUS launch + capture (setup / hold)
+    'bus_skew': 0.15,  # BG-BUS window grows with this fraction of the repeated-wire flight time
+    'bus_fo4_mm': 2.5,  # repeated-wire flight time per mm
+    'rho': 3.0e-8,     # ohm m, effective resistivity of narrow M2/M3 lines
+    'ref_tck': 2.0,    # ns, HBM3 tCCD_L (Ryu et al., JSSC 2023): calibration target
+    'ref_share': 1,    # HBM3 shares IOSAs at the bank group's I/O control
+}
+STAGE_NAMES = {'csl': 'CSL rise', 'ldl': 'LDL develop', 'mdl': 'MDL develop', 'iosa': 'IOSA resolve', 'eq': 'Equalize'}
+
+
+def staged_geometry(dram, tech, share, col_mid):
+    """Line lengths (um), resistance (ohm/um) and capacitance (pF/um) of the column-path wires."""
+    import math
+    _, bank_y, _ = dram.bank_dims(tech)
+    slot = bank_y + dram.dummy_subarray_height(tech)
+    csl_r, mdl_r = dram.csl_mdl_pitch_ratios(tech)
+    per_um = lambda c0, ratio: tech.scale_cap(c0) * tech.rc_ratio_fixed_width(ratio, tech._c_within_layer_sparse_csl_mdl)
+    w3 = 2 * tech.pitch_bl  # M3 CSL / MDL: half the minimum 4 x BL pitch, aspect ratio 2 (fixed width, as DreamRAM)
+    w2 = tech.pitch_ldl / 2  # M2 LDL
+    r = lambda w: STAGED['rho'] * 1e6 / (w * 2 * w)
+    half = 2 if col_mid else 1
+    return dict(f=tech.f, L_csl=bank_y / half, L_ldl=dram.swd_width(tech) + dram.mat_cols * dram.isolation_cols_overhead * tech.pitch_bl,
+                L_mdl=bank_y / half if share == 0 else math.ceil(dram.banks / 2) * slot,
+                L_bus=dram.wire_lengths(tech)['bgbus+gbus'], r3=r(w3), r2=r(w2),
+                c_csl=per_um(tech._c_csl, csl_r), c_mdl=per_um(tech._c_mdl, mdl_r), c_ldl=tech.scale_cap(tech._c_ldl))
+
+
+def staged_times(g, ref, kappa, logic_conf, pumps, share, ecc):
+    """(bank cycle per pump, shared stage per atom, bank parts, shared parts) in ns."""
+    fo4 = kappa * (g['f'] / 0.016) ** logic_conf
+    rc = lambda r, c, L: 0.38 * r * c * L * L * 1e-3  # distributed RC (Elmore), ohm * pF = ps
+    load = lambda k: g['c_' + k] * g['L_' + k] / (ref['c_' + k] * ref['L_' + k])
+    dev = lambda k, ld=None: fo4 * (STAGED[k][0] + STAGED[k][1] * (load(ld or k) if STAGED[k][1] else 0))
+    parts = {
+        'csl': dev('csl') + rc(g['r3'], g['c_csl'], g['L_csl']),
+        'ldl': dev('ldl') + rc(g['r2'], g['c_ldl'], g['L_ldl']),
+        'mdl': dev('mdl') + rc(g['r3'], g['c_mdl'], g['L_mdl']),
+        'iosa': dev('iosa'),
+        'eq': dev('eq', 'mdl') + 0.5 * rc(g['r3'], g['c_mdl'], g['L_mdl']),
+    }
+    bank = sum(parts.values())
+    flight = g['L_bus'] / 1000 * STAGED['bus_fo4_mm'] * fo4
+    shared = {'ecc': STAGED['ecc'] * fo4 if ecc else 0.0, 'bgbus': STAGED['bus_launch'] * fo4 + STAGED['bus_skew'] * flight}
+    if share >= 1:
+        shared['iosa_shared'] = pumps * STAGED['iosa_shared'] * fo4
+    if share == 2:
+        shared['mdl_line'] = pumps * (parts['mdl'] + parts['iosa'] + parts['eq'])
+    return bank, max(shared.values()), parts, shared
+
+
+@functools.lru_cache(maxsize=None)
+def staged_reference(dreamram_dir, mem_json):
+    """Calibration: the HBM3 baseline at 16 nm with its I/O-control IOSAs -> (reference geometry, kappa in ns)."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        dram, tech, _, _, _ = build(dreamram_dir, mem_json, 'configs/tech/scaled/16nm_scaled.json', {}, None)
+    g = staged_geometry(dram, tech, STAGED['ref_share'], 0)
+    a = staged_times(g, g, 0.0, tech.logic_scale_conf, 1, STAGED['ref_share'], 1)
+    b = staged_times(g, g, 1.0, tech.logic_scale_conf, 1, STAGED['ref_share'], 1)
+    # tCCD_L = max(bank, shared) is affine in kappa on each side: pick the kappa that makes the larger one 2 ns
+    kappa = min((STAGED['ref_tck'] - a[0]) / (b[0] - a[0]), (STAGED['ref_tck'] - a[1]) / (b[1] - a[1]))
+    return g, kappa
+
+
 def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgbus=0,
-                 tck_fixed=1, tck_fixed_scale=0, tck_wire=1, bw_bg_cap=0, tsv_chain=0):
+                 tck_fixed=1, tck_fixed_scale=0, tck_wire=1, bw_bg_cap=0, tsv_chain=0,
+                 tccd_staged=0, mdl_share=1, col_mid=0, od_ecc_logic=1):
     """Hbm subclass adding coupled rows, edge-subarray pairing and an I/O-control height override
     (identical to Hbm when all are off)."""
     import numpy as np
@@ -289,7 +383,16 @@ def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgb
             c = tech.c_ratio(self.bgbus_pitch_ratio(tech), tech._c_within_layer_sparse)
             return self.fixed_tck(tech) + (self._tck - tck_fixed) * length * c / self._bgbus_len_ref
 
+        def staged(self, tech):
+            ref, kappa = self._staged_ref
+            g = staged_geometry(self, tech, mdl_share, col_mid)
+            return staged_times(g, ref, kappa, tech.logic_scale_conf, self.pumps_per_atom(), mdl_share, od_ecc_logic)
+
         def core_tck(self, tech):
+            if tccd_staged:
+                # tCCD_L = core_tck x pumps (Hbm.tccdl) = max(pumps x bank cycle, shared stage per atom)
+                bank, shared, _, _ = self.staged(tech)
+                return max(bank, shared / self.pumps_per_atom())
             t = self.bank_stage_tck(tech)
             return max(t, self.bgbus_stage_tck(tech)) if tccd_bgbus else t
 
@@ -355,6 +458,8 @@ def export(dram, tech, p, metrics, status):
             'total_area_mm2': f(dram.total_area(tech)),
             'tck_bank_stage': f(dram.bank_stage_tck(tech)) if hasattr(dram, 'bank_stage_tck') else None,
             'tck_bgbus_stage': f(dram.bgbus_stage_tck(tech)) if hasattr(dram, 'bgbus_stage_tck') else None,
+            **({'staged_bank_ns': f(st[0]), 'staged_shared_ns': f(st[1]), 'staged_parts': {k: f(v) for k, v in {**st[2], **st[3]}.items()}}
+               if getattr(dram, '_staged_ref', None) and (st := dram.staged(tech)) else {}),
         },
         'wire_counts': n,
         'wire_lengths': l,

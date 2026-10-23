@@ -27,6 +27,9 @@
   DR.TECH_PRESETS = {
     '16nm': Object.assign({ label: '16 nm scaled (HBM3, default)', f: 0.016, pitch_wl: 0.041, pitch_bl: 0.047 }, TECH_COMMON),
     '17nm': Object.assign({ label: '17 nm (HBM2E node)', f: 0.017, pitch_wl: 0.043, pitch_bl: 0.050 }, TECH_COMMON),
+    // HBM2-era node (Sohn et al., JSSC 2017, 20 nm): pitches from DreamRAM's 16 nm cell scaled by 6F² cell area.
+    // configs/tech/hbm2_20nm.json; used to cross-check the staged column-cycle model
+    '20nm': Object.assign({ label: '20 nm (HBM2 node)', f: 0.020, pitch_wl: 0.0458, pitch_bl: 0.0525 }, TECH_COMMON),
     // HBM4-class array: 34 nm WL / 36 nm BL pitch. f keeps DreamRAM's f-to-cell-area ratio
     // (16 nm ↔ 41×47 nm cell): f = 16 nm × sqrt(34·36 / (41·47)) = 12.75 nm. configs/tech/hbm4_34wl_36bl.json
     'hbm4': Object.assign({ label: 'HBM4 array: 34 nm WL / 36 nm BL', f: 0.01275, pitch_wl: 0.034, pitch_bl: 0.036 }, TECH_COMMON),
@@ -66,6 +69,7 @@
     _tck: 2, _tcl: 28,
     // extensions beyond DreamRAM (tools/export_floorplan.py implements the same in an Hbm subclass)
     coupled_rows: 1, coupled_lsb: 0, edge_pairing: 0, ioctl_h: 0, channel_rows: 1, tccd_bgbus: 0,
+    tccd_staged: 0, mdl_share: 1, col_mid: 0, od_ecc_logic: 1,
     tck_fixed: 1, tck_fixed_scale: 0, tck_wire: 1, bw_bg_cap: 0, tsv_chain: 0,
   };
 
@@ -102,6 +106,10 @@
       ['coupled_lsb', 'Coupled-row address bit', [[0, 'MSB (Row[i] ↔ Row[i+N/2], DDR4)'], [1, 'LSB (adjacent rows, LPDDR4)']]],
       ['edge_pairing', 'Open-BL edge subarrays', [[0, 'Dummy half-subarrays (DreamRAM)'], [1, 'Paired edge subarrays (store data)']]],
       ['channel_rows', 'Channel rows per die', [[1, '1 · each channel spans both halves (DreamRAM)'], [2, '2 · half the channels above, half below the TSVs']]],
+      ['tccd_staged', 'Column-cycle model', [[0, 'DreamRAM-style (below)'], [1, 'Staged: bank cycle vs shared bank-group stage']]],
+      ['mdl_share', 'MDL / IOSA sharing (staged)', [[1, 'IOSA shared at I/O control (HBM3)'], [0, 'Per-bank IOSA at bank edge'], [2, 'One MDL line shared per side']]],
+      ['col_mid', 'Column decoder (staged)', [[0, 'At bank edge (DreamRAM)'], [1, 'Mid-bank: halves CSL / MDL']]],
+      ['od_ecc_logic', 'OD-ECC / DBI in tCCD_L (staged)', [[1, 'Yes (HBM3 and later)'], [0, 'No']]],
       ['tccd_bgbus', 'tCCD_L from', [[0, 'Bank column path only (DreamRAM)'], [1, 'Slower of bank path and BG-BUS window']]],
       ['tck_fixed', 'Fixed column-cycle time', [[1, '1 ns (DreamRAM)'], [0.75, '0.75 ns'], [0.5, '0.5 ns'], [0.25, '0.25 ns'], [0, '0 · wire delay only']]],
       ['tck_fixed_scale', 'Fixed time vs. node', [[0, 'Constant (DreamRAM)'], [1, 'Scales with logic: (f / 16 nm)^0.9']]],
@@ -285,6 +293,61 @@
   }
 
   // Hbm.core_tck / bandwidth / trcd / trp / tcl
+  // ---- Staged column-cycle model (tccd_staged extension; mirrors tools/export_floorplan.py STAGED) ----
+  // Device delays in FO4-equivalents at the reference load: [fixed, load-dependent]. The load-dependent part scales
+  // with the line's total capacitance relative to the calibration design (HBM3 baseline at 16 nm).
+  DR.STAGED = {
+    csl: [4, 4], ldl: [1, 4], mdl: [2, 6], iosa: [4, 0], eq: [1, 4],
+    iosa_shared: 6, ecc: 24, bus_launch: 4, bus_skew: 0.15, bus_fo4_mm: 2.5, rho: 3.0e-8, ref_tck: 2.0, ref_share: 1,
+  };
+  DR.STAGE_LABELS = {
+    csl: 'CSL rise', ldl: 'LDL develop', mdl: 'MDL develop', iosa: 'IOSA resolve', eq: 'Equalize',
+    ecc: 'OD-ECC + DBI', bgbus: 'BG-BUS window', iosa_shared: 'Shared IOSA', mdl_line: 'Shared MDL line',
+  };
+  function stagedGeometry(p, t, bg, sg, pr, share, colMid) {
+    const ts = techScaled(t), q = t.c_within_csl_mdl;
+    const perUm = (c0, ratio) => c0 * ts.capScale * ((1 - q) + q / ratio);
+    const w3 = 2 * t.pitch_bl, w2 = t.pitch_ldl / 2; // M3 CSL/MDL: half the 4×BL pitch; M2 LDL; aspect ratio 2
+    const r = (w) => DR.STAGED.rho * 1e6 / (w * 2 * w); // ohm per µm
+    const half = colMid ? 2 : 1;
+    return {
+      f: t.f, L_csl: bg.bank_y / half, L_ldl: bg.swd_w + p.mat_cols * t.iso_cols * t.pitch_bl,
+      L_mdl: share === 0 ? bg.bank_y / half : Math.ceil(p.banks / 2) * (bg.bank_y + bg.dummy_y),
+      L_bus: sg.non_tsv_y / 2, r3: r(w3), r2: r(w2),
+      c_csl: perUm(t._c_csl, pr.csl_ratio), c_mdl: perUm(t._c_mdl, pr.mdl_ratio), c_ldl: t._c_ldl * ts.capScale,
+    };
+  }
+  function stagedTimes(g, ref, kappa, logicConf, pumps, share, ecc) {
+    const S = DR.STAGED, fo4 = kappa * pow(g.f / 0.016, logicConf);
+    const rcw = (r, c, L) => 0.38 * r * c * L * L * 1e-3; // distributed RC (Elmore), ohm·pF = ps
+    const load = (k) => (g['c_' + k] * g['L_' + k]) / (ref['c_' + k] * ref['L_' + k]);
+    const dev = (k, ld) => fo4 * (S[k][0] + (S[k][1] ? S[k][1] * load(ld || k) : 0));
+    const parts = {
+      csl: dev('csl') + rcw(g.r3, g.c_csl, g.L_csl),
+      ldl: dev('ldl') + rcw(g.r2, g.c_ldl, g.L_ldl),
+      mdl: dev('mdl') + rcw(g.r3, g.c_mdl, g.L_mdl),
+      iosa: dev('iosa'),
+      eq: dev('eq', 'mdl') + 0.5 * rcw(g.r3, g.c_mdl, g.L_mdl),
+    };
+    const bank = parts.csl + parts.ldl + parts.mdl + parts.iosa + parts.eq;
+    const flight = g.L_bus / 1000 * S.bus_fo4_mm * fo4;
+    const shared = { ecc: ecc ? S.ecc * fo4 : 0, bgbus: S.bus_launch * fo4 + S.bus_skew * flight };
+    if (share >= 1) shared.iosa_shared = pumps * S.iosa_shared * fo4;
+    if (share === 2) shared.mdl_line = pumps * (parts.mdl + parts.iosa + parts.eq);
+    return { bank, shared: Math.max(...Object.values(shared)), parts, sharedParts: shared, fo4, flight };
+  }
+  // Calibration: HBM3 baseline at 16 nm with its I/O-control IOSAs → reference geometry and kappa (ns per FO4)
+  let stagedRefCache = null;
+  function stagedRef() {
+    if (stagedRefCache) return stagedRefCache;
+    const t = DR.TECH_PRESETS['16nm'], B = DR.normalize({});
+    const bb = bankGeom(B, t), sg = stackGeom(B, t, bb, { bank_x: bb.bank_x, bank_y: bb.bank_y });
+    const g = stagedGeometry(B, t, bb, sg, pitchRatios(B, t, bb), DR.STAGED.ref_share, 0);
+    const a = stagedTimes(g, g, 0, t.logic_conf, 1, DR.STAGED.ref_share, 1), b = stagedTimes(g, g, 1, t.logic_conf, 1, DR.STAGED.ref_share, 1);
+    const kappa = Math.min((DR.STAGED.ref_tck - a.bank) / (b.bank - a.bank), (DR.STAGED.ref_tck - a.shared) / (b.shared - a.shared));
+    return (stagedRefCache = { g, kappa });
+  }
+
   function timing(p, t, bg, sg, wc, pr, ref) {
     const B = DR.BASELINE, ts = techScaled(t);
     const mat_width = bg.swd_w + p.mat_cols * t.iso_cols * t.pitch_bl;
@@ -311,7 +374,24 @@
     const wire = B._tck - p.tck_fixed;
     const tck_bank = fixed + wire * numer / denom; // Hbm.core_tck: CSL + MDL over the bank, LDL over a MAT
     const tck_bgbus = fixed + wire * (sg.non_tsv_y / 2) * crat(bgr, t.c_within_sparse) / (ref.non_tsv_y / 2);
-    const core_tck = p.tccd_bgbus ? Math.max(tck_bank, tck_bgbus) : tck_bank;
+    const pumps = p.atom_size / sg.pg.min_atom;
+    let staged = null;
+    if (p.tccd_staged) {
+      // tCCD_L = core_tck × pumps (Hbm.tccdl) = max(pumps × serial bank cycle, shared bank-group stage per atom)
+      const R = stagedRef();
+      staged = stagedTimes(stagedGeometry(p, t, bg, sg, pr, p.mdl_share, p.col_mid), R.g, R.kappa, t.logic_conf, pumps, p.mdl_share, p.od_ecc_logic);
+      staged.kappa = R.kappa;
+      staged.limiter = staged.shared > pumps * staged.bank ? DR.STAGE_LABELS[Object.entries(staged.sharedParts).sort((x, y) => y[1] - x[1])[0][0]] : 'bank cycle';
+    }
+    const core_tck = staged ? Math.max(staged.bank, staged.shared / pumps) : p.tccd_bgbus ? Math.max(tck_bank, tck_bgbus) : tck_bank;
+    // Stage breakdown for the Timing tab even when the staged model does not set tCCD_L (display only)
+    let stagedView = staged;
+    if (!stagedView) {
+      try {
+        const R = stagedRef();
+        stagedView = stagedTimes(stagedGeometry(p, t, bg, sg, pr, p.mdl_share, p.col_mid), R.g, R.kappa, t.logic_conf, pumps, p.mdl_share, p.od_ecc_logic);
+      } catch (e) { stagedView = null; }
+    }
     const dq_speed = p.mdl_bgbus_sd * p.bgbus_gbus_sd * p.gbus_tsv_sd * p.tsv_dq_sd * p.bgbuses_per_gbus;
     const bw_peak = wc.dq_count * dq_speed / (core_tck * (1 + t.md_ecc) * 8);
 
@@ -335,7 +415,6 @@
     // commands wait tCCD_L for the group's shared I/O control / BG-BUS path, so one bank group delivers
     // one atom per tCCD_L; the pseudo-channel's peak (which includes bgbuses_per_gbus) needs groups
     // alternating every tCCD_S.
-    const pumps = p.atom_size / sg.pg.min_atom;
     const tccdl = core_tck * pumps, tccds = core_tck / 2 * pumps;
     const bg_rate = p.atom_size / 8 / tccdl; // GB/s of data per bank group
     const pc_rate = bw_peak / (p.channels * p.pch); // GB/s per pseudo-channel at peak
@@ -351,9 +430,9 @@
       { key: 'dq', label: 'DQ', wires: wc.dq_count / (p.channels * p.pch), rate: dq_speed / core_tck },
     ];
     return {
-      core_tck, tck_bank, tck_bgbus, tck_fixed: fixed, limiter: p.tccd_bgbus && tck_bgbus > tck_bank ? 'BG-BUS window' : 'bank column path',
+      core_tck, tck_bank, tck_bgbus, tck_fixed: fixed, limiter: staged ? staged.limiter : p.tccd_bgbus && tck_bgbus > tck_bank ? 'BG-BUS window' : 'bank column path',
       bw, bw_peak, trcd, trp, tcl, latency: tcl + trcd + trp, dq_rate: dq_speed / core_tck,
-      tccdl, tccds, bg_rate, pc_rate, bgs_needed, bgs_per_pc, levels,
+      tccdl, tccds, bg_rate, pc_rate, bgs_needed, bgs_per_pc, levels, pumps, staged, stagedView,
     };
   }
 
@@ -467,6 +546,10 @@
       add('tCCD_L', m.timing.tccdl, ex.metrics.tccdl);
       add('bank-path stage', m.timing.tck_bank, ex.derived && ex.derived.tck_bank_stage);
       add('BG-BUS stage', m.timing.tck_bgbus, ex.derived && ex.derived.tck_bgbus_stage);
+      if (m.timing.staged) {
+        add('staged bank cycle', m.timing.staged.bank, ex.derived && ex.derived.staged_bank_ns);
+        add('staged shared stage', m.timing.staged.shared, ex.derived && ex.derived.staged_shared_ns);
+      }
     }
     return rows;
   };

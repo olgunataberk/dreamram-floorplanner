@@ -24,6 +24,7 @@ Then open <http://localhost:8813/>. You can also open `index.html` directly from
 | Free zoom / pan | Scroll wheel / drag (**F** re-fits the current level) |
 | Show / hide components | The **Components** panel, the legend of the die-area bar, or **Hide …** in the selection panel |
 | Labels on/off | **L** |
+| Column-read wave diagram | The **Timing** tab (see [below](#timing-tab)) |
 
 Each level dims everything outside the focused component. Drawing switches automatically between level-of-detail stages, so the whole die (~100k MATs) stays responsive.
 
@@ -400,6 +401,111 @@ With two groups alternating, the pin rate is `access bits × 2 / (32 DQs × tCCD
 - **Only the bank-path-only model reaches 32 Gb/s,** and only with 64 B accesses: 9 designs, all 2 vertical groups × 16 banks (32 banks per pseudo-channel, twice HBM4's) with a 4 KiB wordline of four coupled 1 KiB rows and 512 bits per pump. The smallest is bundled as **32G · bank path only · 2 BGs × 16 banks, 64 B access**: tCCD_L 0.97 ns, 33.1 Gb/s (8.5 TB/s), 26.48 × 10.94 mm = 289.7 mm² (+67% vs. HBM4 coupled), 70.3 ns row-miss latency, 192 W. Its BG-BUS stage is 1.75 ns, so enforcing that window caps it at about 18 Gb/s.
 - **TSVs dominate its extra area.** With GBUS→TSV 1:1 its 544 GBUS bits per pseudo-channel each need a TSV (39,680 data TSVs per die, 81 mm²). Serialising 4:1 onto the TSVs (136 TSVs per pseudo-channel at 8.3 Gb/s) brings the die to 233.7 mm² at the same pin rate.
 
+## Staged tCCD_L model (`tccd_staged`)
+
+DreamRAM's column cycle is one number: a 1 ns driver term plus a wire term. The staged model breaks it into the steps of one column read. tCCD_L is then the slower of two things:
+- the bank's own serial cycle (once per pump);
+- the stage the bank group shares (once per atom).
+
+```
+tCCD_L = max(pumps × bank cycle, shared stage)        tCCD_S = tCCD_L / 2 (as DreamRAM)
+```
+
+Turn it on under **Parameters → Extensions → Column-cycle model: Staged**, or with `--set tccd_staged=1` in the exporter. Both implementations match to ≤ 4.8e-16 on 60 random staged designs. With it off, every bundled example is unchanged.
+
+### Is the MDL shared by the banks of a group?
+
+Not the wires. What the group shares is the sense amp at their end. Every source draws a bank's MDL (global I/O) pairs over that bank's own MATs. They differ on where the I/O sense amp (IOSA) sits, so on how far a bank's MDL pair runs before it is resolved:
+
+| Organisation | Source | `mdl_share` |
+| --- | --- | --- |
+| IOSA per bank: per-bank global sense amps and data bus, muxed onto a shared bus | NVIDIA FGDRAM (O'Connor et al., MICRO 2017) | `0` |
+| Helper flip-flop at the LDL/MDL junction, 256 global SAs per bank. tCCD_L is set by the CSL → column mux → local SA → global SA path | Chatterjee et al., HPCA 2017 (subchannels) | `0` |
+| IOSA shared by 2–4 adjacent banks through bank-select transfer gates on each bank's global I/O lines | Samsung, US 6,327,214 B1 | `1` |
+| Central I/O control per bank group, between its banks | Ryu et al. (HBM3, JSSC 2023) | `1` (calibration) |
+| One GIO pair shared by 4 banks through switches. Interleaved reads need non-overlapping windows, which caps frequency | US 7,289,385 | `2` |
+| Local I/O gating per bank group, then global I/O gating | Micron DDR4 design guide | — |
+
+So "one differential MDL pair shared by all banks in a group" describes only the `2` style. The common case is per-bank MDL wires into a shared (`1`) or per-bank (`0`) IOSA. All three are modelled.
+
+### Stages
+
+Each stage is a device delay in FO4 units plus, for the long lines, the line's distributed RC (0.38 · r · c · L²):
+
+| Stage (per pump) | FO4 at the reference load | Wire | Length |
+| --- | --- | --- | --- |
+| CSL rise | 4 + 4 × load | M3 | bank height (half with `col_mid`) |
+| LDL develop | 1 + 4 × load | M2 | sub-wordline driver + one MAT's columns |
+| MDL develop | 2 + 6 × load | M3 | per-bank IOSA: bank height. IOSA at the I/O control: ceil(banks / 2) bank slots |
+| IOSA resolve | 4 | — | — |
+| Equalise | 1 + 4 × MDL load | half the MDL RC | — |
+
+| Shared stage (per atom) | FO4 |
+| --- | --- |
+| OD-ECC decode/correct + DBI (`od_ecc_logic`) | 24 |
+| BG-BUS window | 4 + 0.15 × repeated-wire flight (2.5 FO4/mm) |
+| Shared IOSA occupancy (`mdl_share` ≥ 1) | 6 per pump |
+| Shared MDL line (`mdl_share = 2`) | pumps × (MDL + IOSA + equalise) |
+
+"Load" is the line's C × L relative to the calibration design, using DreamRAM's own per-µm capacitances and pitch ratios. Resistance uses ρ_eff = 3 × 10⁻⁸ Ω·m. M3 CSL/MDL lines are 2 × BL pitch wide (half of DreamRAM's minimum 4 × BL pitch) with aspect ratio 2; M2 LDLs are half the LDL pitch wide. One FO4 is κ · (f / 16 nm)^0.9, the same logic scaling DreamRAM applies to its peripheral tiles.
+
+**Calibration.** Only κ is fitted. The FO4 counts are priors, chosen to be plausible, not fitted. κ = 43.0 ps makes the HBM3 baseline (16 nm, IOSA at the I/O control) cycle at Ryu et al.'s 2.00 ns:
+
+| HBM3 baseline | CSL | LDL | MDL | IOSA | Equalise | **Bank cycle** | OD-ECC + DBI | BG-BUS | Shared IOSA |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ns | 0.51 | 0.22 | 0.70 | 0.17 | 0.40 | **2.00** | 1.03 | 0.26 | 0.26 |
+
+Its MDL runs 1,265 µm, two bank slots, to the I/O control. With per-bank IOSAs the same die would cycle at 1.36 ns.
+
+**Cross-check on a design not used in the fit.** HBM2 (8 Gb die, 20 nm, `configs/tech/hbm2_20nm.json`, per-bank global SAs as in FGDRAM, no OD-ECC) is reported at 2 ns per internal column cycle (tCCD_L = 4 ns over 2 pumps). The model gives 1.77 ns (−12%) with a mid-bank column decoder (`col_mid = 1`), and 3.21 ns with DreamRAM's edge decoder. Fitting both anchors with an edge decoder needs a negative wire term, which suggests HBM2's tall banks are driven from the middle.
+
+```bash
+python3 tools/export_floorplan.py --dreamram /path/to/DreamRAM -t $PWD/configs/tech/hbm2_20nm.json \
+  --set sids=1 --set channels=8 --set ch_per_die=2 --set vert_bg=4 --set banks=4 --set mats=16 \
+  --set subarrays=32 --set ldls_mdls=8 --set tccd_staged=1 --set mdl_share=0 --set col_mid=1 --set od_ecc_logic=0
+```
+
+(DreamRAM discards this point with status 11, a die dimension over 13 mm. The exporter still reports the staged bank cycle.)
+
+### Bundled designs under the staged model
+
+tCCD_L in ns / implied pin rate in Gb/s. The rate assumes each design keeps its DreamRAM-sized datapath.
+
+| Design | DreamRAM | Staged, per-bank IOSA (`0`) | Staged, IOSA at I/O control (`1`) |
+| --- | --- | --- | --- |
+| HBM3 baseline | 2.00 / 8.0 | 1.36 / 11.7 | 2.00 / 8.0 |
+| HBM3 organisation, 17 nm | 2.00 / 8.0 | 1.49 / 10.8 | 2.17 / 7.4 |
+| HBM4 1 SID, 4-high | 2.67 / 6.0 | 1.75 / 9.1 | 8.21 / 2.0 |
+| HBM4 1 SID, coupled rows | 1.93 / 8.3 | 0.99 / 16.2 | 3.21 / 5.0 |
+| Samsung HBM4 12H, coupled | 1.75 / 9.1 | 0.85 / 18.8 | 2.36 / 6.8 |
+| HBM5 2 BGs, min area | 1.94 / 8.2 | 0.87 / 18.4 | 2.64 / 6.1 |
+| HBM5 2 BGs, HBM4 MATs | 1.64 / 9.8 | 0.84 / 19.0 | 1.67 / 9.6 |
+| 32G · 2 BGs × 16 banks, 64 B | 0.97 / 33.1 | 0.84 / 38.0 (OD-ECC + DBI limits) | 2.71 / 11.8 |
+| High-BW subchannels (8 pumps) | 13.77 / 9.3 | 8.91 / 14.4 | 8.96 / 14.3 |
+
+`mdl_share = 2` matches `1` on all of these, because the bank cycle already dominates.
+
+- **Where the IOSA sits matters most.** With IOSAs at the I/O control, the farthest bank's MDL runs ceil(banks / 2) bank slots. Its RC grows with length², so the 8- and 16-bank groups of the HBM4/HBM5 designs land at 1.7–8.2 ns.
+- **Large groups therefore need per-bank IOSAs, or IOSAs shared by a pair of banks.** That fits the Samsung patent's 2–4-bank sharing.
+- **With per-bank IOSAs the picture is better than DreamRAM's.** Every HBM4/HBM5 design here reaches 0.84–1.75 ns. The 32 Gb/s design's limit moves from its banks to OD-ECC + DBI (24 FO4 = 0.84 ns at the HBM4 node).
+- **The default stays `mdl_share = 1`** because that is the HBM3 organisation the model is calibrated on.
+
+<a id="timing-tab"></a>
+### Timing tab
+
+The **Timing** tab draws four column reads as a wave diagram. Its lanes are:
+- CK and the column commands;
+- per bank group: CSL, LDL ΔV and MDL ΔV (as analog development ramps), the IOSA, OD-ECC + DBI and the BG-BUS window;
+- the two alternating GBUS sets;
+- the DQ burst after tCL. A dashed break stands for the tCL gap.
+
+Three scenarios:
+- **Same bank**: the bank's own lines must equalise before its next CSL.
+- **Other bank, same bank group**: banks overlap their own lines but share the IOSA, OD-ECC/DBI and BG-BUS.
+- **Other bank group**: reads alternate every tCCD_S, and each group still sees tCCD_L.
+
+The stage widths come from the staged model. With the staged model off, the same split is scaled to DreamRAM's tCK, and the header says so. Hover any segment for its duration. It follows the selected design and every parameter change.
+
 ## Drawing choices (not specified by DreamRAM)
 
 DreamRAM's model fixes the size of every block, but not always where each block sits. Where it does not, the viewer makes these choices:
@@ -426,9 +532,11 @@ js/model.js        DreamRAM model port (geometry, filters, bandwidth/latency)
 js/floorplan.js    lazy hierarchy of placed rectangles (µm)
 js/render.js       canvas renderer, LOD, wiring, TSVs, stack view, hit-testing
 js/app.js          UI: navigation, tree, components, parameters, metrics, exports
+js/timing.js       Timing tab: column-read wave diagram (SVG)
 js/examples.js     bundled DreamRAM exports (generated)
 tools/export_floorplan.py   export a design's geometry + metrics from DreamRAM
 tools/build_examples.py     bundle examples/*.json into js/examples.js
 tools/serve.py              no-cache local server
 tools/sweep_pin_rate.py     iso-capacity sweep for a target pin rate (runs DreamRAM via the exporter)
+configs/tech/*.json         DreamRAM tech configs for the HBM4 array and the 20 nm HBM2 cross-check
 ```

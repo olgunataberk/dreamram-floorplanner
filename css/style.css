@@ -186,3 +186,36 @@ table.tsvt tr.grp td { font-weight: 600; border-top: 1px solid var(--border); pa
   .layout { grid-template-columns: 230px 1fr 290px; }
   .hint { display: none; }
 }
+
+/* tabs + timing view */
+.tabs { display: flex; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 2px; }
+.tabs button { background: none; border: 0; padding: 3px 12px; border-radius: 5px; cursor: pointer; color: var(--dim); }
+.tabs button.on { background: var(--panel); color: var(--text); box-shadow: 0 0 0 1px var(--border); }
+body.tab-timing .panel.left, body.tab-timing #crumbs, body.tab-timing #btn-up, body.tab-timing #btn-fit { display: none; }
+body.tab-timing .layout { grid-template-columns: 1fr 330px; }
+body.tab-timing #cv, body.tab-timing .hint, body.tab-timing #tip { display: none; }
+.timing { position: absolute; inset: 0; overflow: auto; padding: 12px 12px 24px; background: var(--bg); }
+.thead { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 8px; }
+.tseg { display: flex; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 2px; }
+.tseg button { background: none; border: 0; padding: 4px 10px; border-radius: 5px; cursor: pointer; color: var(--dim); }
+.tseg button.on { background: var(--panel); color: var(--text); box-shadow: 0 0 0 1px var(--border); }
+.tsum { font-size: 12.5px; color: var(--dim); }
+.tsum b { color: var(--text); font-family: var(--mono); font-weight: 500; }
+.twhy { font-size: 12.5px; color: var(--dim); max-width: 980px; margin-bottom: 8px; }
+.twrap { overflow-x: auto; }
+.tsvg { display: block; color: var(--text); }
+.tsvg .tlabel { fill: var(--dim); font-size: 11.5px; }
+.tsvg .tsmall { fill: var(--dim); font-size: 11px; }
+.tsvg .tbox { fill: #fff; font-size: 10.5px; font-weight: 600; pointer-events: none; }
+:root[data-theme="light"] .tsvg .tbox { fill: #1d2330; }
+.tsvg .tlane { stroke: var(--border); }
+.tsvg .tgrid { stroke: var(--border); stroke-dasharray: 2 4; opacity: 0.6; }
+.tsvg .tck { fill: none; stroke: var(--dim); stroke-width: 1.5; }
+.tsvg .tbreak { fill: var(--panel-2); stroke: var(--border); stroke-dasharray: 3 3; }
+.tsvg .tbracket { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.tsvg .tbrlabel { fill: var(--accent); font-size: 11.5px; font-weight: 600; }
+.tsvg rect.hatch { fill: url(#thatch); }
+.tnote { color: var(--dim); padding: 24px; }
+.tstages { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--dim); margin-top: 6px; }
+.tstages b { color: var(--text); font-weight: 500; }
+.tstages .sh b { color: var(--accent); }
