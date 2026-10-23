@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DreamRAM Floorplan Viewer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css?v=15">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">▦</span> DreamRAM <span class="dim">Floorplan Viewer</span></div>
+    <button id="btn-up" class="icon-btn" title="Up one level (Backspace / Esc)">↑ Up</button>
+    <nav id="crumbs" class="crumbs"></nav>
+    <div class="spacer"></div>
+    <button id="btn-fit" class="icon-btn" title="Fit current level (F)">⤢ Fit</button>
+    <button id="btn-theme" class="icon-btn" title="Toggle light/dark">◐</button>
+  </header>
+
+  <main class="layout">
+    <aside class="panel left">
+      <section>
+        <h2>Hierarchy</h2>
+        <div id="tree" class="tree"></div>
+      </section>
+      <section>
+        <h2>Components <span class="h2-actions"><button data-layers="all">all</button><button data-layers="none">none</button></span></h2>
+        <div id="layers" class="layers"></div>
+      </section>
+    </aside>
+
+    <div class="stage">
+      <canvas id="cv"></canvas>
+      <div id="tip" class="tip" hidden></div>
+      <div class="hint">Click: select · Double-click: go down · Backspace/Esc: go up · Scroll: zoom · Drag: pan · F: fit · L: labels</div>
+      <div id="status" class="status"></div>
+    </div>
+
+    <aside class="panel right">
+      <section>
+        <h2>Design</h2>
+        <div class="row">
+          <select id="example" title="Load a DreamRAM-exported design"></select>
+        </div>
+        <div class="row buttons">
+          <label class="file-btn">Load DreamRAM export…<input id="file" type="file" accept=".json,application/json" hidden></label>
+          <button id="btn-reset">HBM3 baseline</button>
+        </div>
+        <div id="source" class="source"></div>
+        <div id="problems"></div>
+      </section>
+      <section>
+        <h2>Selection</h2>
+        <div id="info" class="info"></div>
+      </section>
+      <section>
+        <h2>Metrics</h2>
+        <div id="metrics" class="kv"></div>
+      </section>
+      <section>
+        <h2>Die area breakdown</h2>
+        <div id="area"></div>
+      </section>
+      <section>
+        <h2>Parameters</h2>
+        <div class="row"><label>Tech node</label><select id="tech"></select></div>
+        <div id="params"></div>
+      </section>
+      <section id="validation-sec" hidden>
+        <h2>Port vs. DreamRAM</h2>
+        <div id="validation"></div>
+      </section>
+    </aside>
+  </main>
+
+  <script src="js/model.js?v=15"></script>
+  <script src="js/floorplan.js?v=15"></script>
+  <script src="js/render.js?v=15"></script>
+  <script src="js/examples.js?v=15"></script>
+  <script src="js/app.js?v=15"></script>
+</body>
+</html>
