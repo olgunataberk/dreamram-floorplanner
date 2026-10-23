@@ -555,6 +555,56 @@ The first of these is bundled as **32G · staged, per-bank IOSA · 2 BGs × 8 ba
 
 The default sweep (2–16 bank groups) has one caveat that applies to every model, not only the staged ones. It credits all bank groups alternating onto the GBUS, i.e. tCCD_S = tCCD_L / groups. DreamRAM's own tCCD_S is tCCD_L / 2. With more than 2 groups, the pin rates in the first table above therefore assume a command rate and a GBUS window that DreamRAM doesn't check. Capping at DreamRAM's tCCD_S leaves no default-sweep design at 32 Gb/s.
 
+### Scaling the HBM4 interface from 8 to 32 Gb/s
+
+```bash
+python3 tools/sweep_interface.py --dreamram /path/to/DreamRAM [--rates 8,16,24,32] [--options hbm4,bg4,bg8,a64,a64_bg4,pc4,pc4_bg4]
+```
+
+This sweep keeps the stack fixed: 16 GB, 32 Gb per die, 2,048 data DQs and 1 KiB host rows. Each *interface option* fixes what the host sees:
+- pseudo-channels per channel, and so DQs per pseudo-channel;
+- the access size;
+- bank groups and banks per pseudo-channel.
+
+Everything inside the die is swept, timed with the staged model under all three IOSA placements. Each design gets the fewest TSVs that keep every TSV at ≤ 8 Gb/s. It takes about 15 s.
+
+**Rate model.** One access per pseudo-channel fits in each burst, tB = access bits / (DQs × pin rate); this is tCCD_S, 2 nCK for HBM4's BL8. G bank groups take turns, so the rate requirement is tCCD_L ≤ G × tB. DreamRAM's own tCCD_S = tCCD_L / 2 is not used.
+
+Reported but not used to filter:
+- **Clock and command bus.** CK is a quarter of the pin rate, and the column-command bus is busy one CK per access per pseudo-channel.
+- **GBUS sets.** These are the alternating GBUS copies needed so each holds data for its minimum window. Ryu et al. found 1 ns too short at 16 nm and used 2 ns; that 1–2 ns range is scaled by FO4.
+- **Power.** Closed-row pJ/b × the stack's bandwidth.
+
+**Keeping the HBM4 interface (2 PCs × 32 DQ, 32 B, 2 groups × 8 banks):**
+
+| Pin rate | Per-bank IOSA | Per-bank, mid-bank decoder | IOSA at the I/O control |
+| --- | --- | --- | --- |
+| 8 Gb/s | 129.1 mm², tCCD_L 1.88 / 2.00 ns | 125.6 mm² | none (fastest 6.1 Gb/s) |
+| 16 Gb/s | 134.7 mm², 0.94 / 1.00 ns | 133.8 mm², 0.84 / 1.00 ns | none |
+| 20–32 Gb/s | none (fastest 18.6) | none (fastest 19.0, OD-ECC + DBI) | none |
+
+- **16 Gb/s works on the HBM4 interface, but only with an IOSA in every bank.** It costs about 4% more die than 8 Gb/s (more TSVs). It needs a 4 GHz CK and 2–4 GBUS sets instead of 1–2. tCCD_L margin is 6% (16% with mid-bank decoders).
+- **Above about 19 Gb/s the HBM4 interface runs out.** OD-ECC + DBI alone takes 0.84 ns of the 0.5 ns that 32 Gb/s allows per group. Even with ECC pipelined, the bank cycle caps it near 26–29 Gb/s.
+- **The shared-IOSA model can't hold even 8 Gb/s with 2 groups × 8 banks (6.1 Gb/s).** That matches JEDEC's tCCD_L of 2.5 ns for this organisation, which sustains 6.4 Gb/s with two groups taking turns.
+
+**At 32 Gb/s, breaking the interface (smallest die per option):**
+
+| Option (what changes) | Per-bank IOSA | Passes under all three IOSA models | CA bus | GBUS sets | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `a64`: 64 B access (our earlier best) | 149.4 mm², 0.99 / 1.00 ns | none | 50% | 2–4 | 109 ns, ≈ 135 W |
+| `a64_bg4`: 64 B access + 4 groups × 4 banks | **144.2 mm²**, 1.88 / 2.00 ns | **149.6 mm²**, 1.10 / 2.00 ns | 50% | 2–4 | 90 / 155 ns, ≈ 147 / 163 W |
+| `pc4_bg4`: 4 PCs × 16 DQ, 32 B, 4 groups × 2 banks | 145.8 mm², 1.39 / 2.00 ns | 145.8 mm² (same design) | 100% | 2–4 | 122 ns, ≈ 161 W |
+| `bg4`: 32 B, 4 groups × 4 banks | 144.2 mm², 0.94 / 1.00 ns | none | 100% | 4–7 | 90 ns, ≈ 219 W |
+| `bg8`: 32 B, 8 groups × 2 banks | 143.4 mm², 1.39 / 2.00 ns | 143.4 mm² | 100% | 4–7 | 220 ns, ≈ 324 W |
+| `pc4`: 4 PCs × 16 DQ, 32 B, 2 groups | 167.8 mm², 0.87 / 1.00 ns | none | 100% | 2–4 | 99 ns, ≈ 147 W |
+
+- **More bank groups beat a wider access alone.** With 4 groups as well as 64 B accesses, each group gets 2 ns, against 1 ns with 64 B alone. The best design then passes even with the IOSA at the I/O control, the organisation JEDEC's HBM4 number points to. Its die is about the same as the 64 B-only design's, which passed only with per-bank IOSAs and 1% margin.
+- **To keep 32 B accesses, split each channel into 4 pseudo-channels of 16 DQs with 4 groups each.** That keeps 32 banks per channel, as in HBM4, and passes under every IOSA model. The cost is a 100%-busy command bus at 8 GHz CK.
+- **More groups at 32 B on 32 DQs works on paper but is costly.** It needs a 0.25 ns burst, 4–7 GBUS sets and an 8 GHz command bus at 100%. 8 groups adds 2× latency and power.
+- **64 B accesses halve the command-bus load.** That's the main interface argument for them beyond bank timing.
+
+Same caveats as above apply: the 24-gate-delay ECC prior, the calibration, the uncosted GBUS sets and per-bank IOSAs, and power. The power column is worst-case closed-row. None of these dies fits HBM4's 14.2 × 11.0 mm footprint; DreamRAM's HBM4 reference doesn't either.
+
 <a id="timing-tab"></a>
 ### Timing tab
 
@@ -603,5 +653,6 @@ tools/export_floorplan.py   export a design's geometry + metrics from DreamRAM
 tools/build_examples.py     bundle examples/*.json into js/examples.js
 tools/serve.py              no-cache local server
 tools/sweep_pin_rate.py     iso-capacity sweep for a target pin rate (runs DreamRAM via the exporter)
+tools/sweep_interface.py    HBM4 interface scaling 8-32 Gb/s and interface-breaking options at fixed capacity
 configs/tech/*.json         DreamRAM tech configs for the HBM4 array and the 20 nm HBM2 cross-check
 ```
