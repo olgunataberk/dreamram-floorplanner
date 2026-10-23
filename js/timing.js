@@ -36,18 +36,19 @@
         const mdl = [ldl[1], ldl[1] + part('mdl')];
         const iosa = [mdl[1], mdl[1] + part('iosa')];
         const eq = [iosa[1], iosa[1] + part('eq')];
-        pumps.push({ csl, ldl, mdl, iosa, eq });
+        // each pump's MDL word is corrected (OD-ECC + DBI) and then held on the BG-BUS for one core cycle
+        // (tCCD_L per pump, Ryu et al.); the shared stages are paid per pump
+        const ecc = [iosa[1], iosa[1] + sh('ecc') / P];
+        const bus = [ecc[1], ecc[1] + tm.tccdl / P];
+        const busMin = [ecc[1], ecc[1] + sh('bgbus') / P];
+        pumps.push({ csl, ldl, mdl, iosa, eq, ecc, bus, busMin });
         t = eq[1]; // the next pump's CSL fires once the lines are equalised (the model's serial bank cycle)
       }
-      const lastIosa = pumps[P - 1].iosa[1];
-      const ecc = [lastIosa, lastIosa + sh('ecc')];
-      const busStart = ecc[1];
-      const bus = [busStart, busStart + tm.tccdl]; // BG-BUS holds each atom for one tCCD_L window (Ryu et al.)
-      const busMin = [busStart, busStart + sh('bgbus')];
+      const busStart = pumps[0].bus[0], busEnd = pumps[P - 1].bus[1];
       const flight = sv.flight * scale;
       const gbus = [busStart + flight, busStart + flight + 2 * tm.tccds]; // ADL: two GBUS sets, 2 × tCCD_S each
       const dq = [t0 + tm.tcl, t0 + tm.tcl + tburst];
-      reads.push({ k, t0, bg: SCENARIOS[scen].bgOf(k), bank: SCENARIOS[scen].bankOf(k), pumps, ecc, bus, busMin, gbus, dq });
+      reads.push({ k, t0, bg: SCENARIOS[scen].bgOf(k), bank: SCENARIOS[scen].bankOf(k), pumps, busEnd, gbus, dq });
     }
     return { reads, gap, scale };
   }
@@ -66,7 +67,7 @@
     const colors = P.cpl.concat(P.pages);
 
     // Time axis: the core part, then a break, then the DQ bursts one tCL later
-    const coreEnd = Math.max(...S.reads.map((r) => Math.max(r.gbus[1], r.bus[1]))) + 0.3;
+    const coreEnd = Math.max(...S.reads.map((r) => Math.max(r.gbus[1], r.busEnd))) + 0.3;
     const dqStart = S.reads[0].dq[0] - 0.3, dqEnd = S.reads[N_READS - 1].dq[1] + 0.3;
     const W = Math.max(640, container.clientWidth - 24), labelW = 150, breakW = 28;
     const span = coreEnd + (dqEnd - dqStart);
@@ -139,9 +140,12 @@
         ramp('mdl' + g, pp.mdl[0], pp.mdl[1], pp.iosa[1], pp.eq[1], c, `${name}${pj}: MDL develops ${f2(pp.mdl[1] - pp.mdl[0])} ns (helper flip-flop drives the line), equalises with the LDL`);
         box('iosa' + g, pp.iosa[0], pp.iosa[1], c, '', `${name}${pj}: IOSA resolves in ${f2(pp.iosa[1] - pp.iosa[0])} ns`);
       });
-      if (m.p.od_ecc_logic) box('ecc' + g, r.ecc[0], r.ecc[1], c, 'ECC', `${name}: OD-ECC + DBI ${f2(r.ecc[1] - r.ecc[0])} ns (shared by the bank group)`);
-      box('bus' + g, r.bus[0], r.bus[1], c, 'data', `${name}: BG-BUS holds the atom for one tCCD_L (${f2(tm.tccdl)} ns); it needs at least ${f2(r.busMin[1] - r.busMin[0])} ns`, { op: 0.35 });
-      box('bus' + g, r.busMin[0], r.busMin[1], c, '', `${name}: minimum BG-BUS window ${f2(r.busMin[1] - r.busMin[0])} ns (launch + skew)`);
+      r.pumps.forEach((pp, j) => {
+        const pj = pumps > 1 ? ` pump ${j + 1}/${pumps}` : '', n = pumps > 1 ? j + 1 : '';
+        if (m.p.od_ecc_logic) box('ecc' + g, pp.ecc[0], pp.ecc[1], c, `ECC${n}`, `${name}${pj}: OD-ECC + DBI ${f2(pp.ecc[1] - pp.ecc[0])} ns (shared by the bank group)`);
+        box('bus' + g, pp.bus[0], pp.bus[1], c, `data${n}`, `${name}${pj}: BG-BUS holds the word for one core cycle (${f2(pp.bus[1] - pp.bus[0])} ns); it needs at least ${f2(pp.busMin[1] - pp.busMin[0])} ns`, { op: 0.35 });
+        box('bus' + g, pp.busMin[0], pp.busMin[1], c, '', `${name}${pj}: minimum BG-BUS window ${f2(pp.busMin[1] - pp.busMin[0])} ns (launch + skew)`);
+      });
       box('gbus' + (i % 2), r.gbus[0], r.gbus[1], c, `RD${i + 1}`, `${name}: GBUS-${(i % 2) + 1} window 2 × tCCD_S = ${f2(r.gbus[1] - r.gbus[0])} ns (ADL)`);
       box('dq', r.dq[0], r.dq[1], c, `RD${i + 1}`, `${name}: ${m.p.atom_size}-bit burst at ${f2(tm.dq_rate)} Gb/s per pin = ${f2(r.dq[1] - r.dq[0])} ns`);
     });
@@ -172,7 +176,7 @@
       <div class="twhy">${esc(why)}${esc(note)}</div>
       <div class="twrap">${svg}</div>
       <div class="tstages">${Object.entries(sv.parts).map(([k, v]) => `<span><b>${DR.STAGE_LABELS[k]}</b> ${f2(v * S.scale)} ns</span>`).join('')}
-        ${Object.entries(sv.sharedParts).map(([k, v]) => `<span class="sh"><b>${DR.STAGE_LABELS[k]}</b> ${f2(v * S.scale)} ns</span>`).join('')}</div>`;
+        ${Object.entries(sv.sharedParts).map(([k, v]) => `<span class="sh"><b>${DR.STAGE_LABELS[k]}</b> ${f2(v * S.scale)} ns${pumps > 1 ? ` (${pumps} pumps)` : ''}</span>`).join('')}</div>`;
     container.querySelectorAll('[data-scen]').forEach((btn) => (btn.onclick = () => { state.scenario = btn.dataset.scen; render(container, m, state); }));
   }
 

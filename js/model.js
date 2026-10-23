@@ -295,7 +295,8 @@
   // Hbm.core_tck / bandwidth / trcd / trp / tcl
   // ---- Staged column-cycle model (tccd_staged extension; mirrors tools/export_floorplan.py STAGED) ----
   // Device delays in FO4-equivalents at the reference load: [fixed, load-dependent]. The load-dependent part scales
-  // with the line's total capacitance relative to the calibration design (HBM3 baseline at 16 nm).
+  // with the line's total capacitance relative to the calibration design (HBM3 baseline at 16 nm). Shared stages are
+  // paid per pump (OD-ECC, IOSA) or per BG-BUS transfer (pumps × mdl_bgbus_sd).
   DR.STAGED = {
     csl: [4, 4], ldl: [1, 4], mdl: [2, 6], iosa: [4, 0], eq: [1, 4],
     iosa_shared: 6, ecc: 24, bus_launch: 4, bus_skew: 0.15, bus_fo4_mm: 2.5, rho: 3.0e-8, ref_tck: 2.0, ref_share: 1,
@@ -317,7 +318,7 @@
       c_csl: perUm(t._c_csl, pr.csl_ratio), c_mdl: perUm(t._c_mdl, pr.mdl_ratio), c_ldl: t._c_ldl * ts.capScale,
     };
   }
-  function stagedTimes(g, ref, kappa, logicConf, pumps, share, ecc) {
+  function stagedTimes(g, ref, kappa, logicConf, pumps, share, ecc, busSd = 1) {
     const S = DR.STAGED, fo4 = kappa * pow(g.f / 0.016, logicConf);
     const rcw = (r, c, L) => 0.38 * r * c * L * L * 1e-3; // distributed RC (Elmore), ohm·pF = ps
     const load = (k) => (g['c_' + k] * g['L_' + k]) / (ref['c_' + k] * ref['L_' + k]);
@@ -331,7 +332,7 @@
     };
     const bank = parts.csl + parts.ldl + parts.mdl + parts.iosa + parts.eq;
     const flight = g.L_bus / 1000 * S.bus_fo4_mm * fo4;
-    const shared = { ecc: ecc ? S.ecc * fo4 : 0, bgbus: S.bus_launch * fo4 + S.bus_skew * flight };
+    const shared = { ecc: ecc ? pumps * S.ecc * fo4 : 0, bgbus: pumps * busSd * (S.bus_launch * fo4 + S.bus_skew * flight) };
     if (share >= 1) shared.iosa_shared = pumps * S.iosa_shared * fo4;
     if (share === 2) shared.mdl_line = pumps * (parts.mdl + parts.iosa + parts.eq);
     return { bank, shared: Math.max(...Object.values(shared)), parts, sharedParts: shared, fo4, flight };
@@ -377,9 +378,10 @@
     const pumps = p.atom_size / sg.pg.min_atom;
     let staged = null;
     if (p.tccd_staged) {
-      // tCCD_L = core_tck × pumps (Hbm.tccdl) = max(pumps × serial bank cycle, shared bank-group stage per atom)
+      // tCCD_L = core_tck × pumps (Hbm.tccdl) = max(pumps × serial bank cycle, shared bank-group stage per atom),
+      // with every shared stage paid per pump or per BG-BUS transfer
       const R = stagedRef();
-      staged = stagedTimes(stagedGeometry(p, t, bg, sg, pr, p.mdl_share, p.col_mid), R.g, R.kappa, t.logic_conf, pumps, p.mdl_share, p.od_ecc_logic);
+      staged = stagedTimes(stagedGeometry(p, t, bg, sg, pr, p.mdl_share, p.col_mid), R.g, R.kappa, t.logic_conf, pumps, p.mdl_share, p.od_ecc_logic, p.mdl_bgbus_sd);
       staged.kappa = R.kappa;
       staged.limiter = staged.shared > pumps * staged.bank ? DR.STAGE_LABELS[Object.entries(staged.sharedParts).sort((x, y) => y[1] - x[1])[0][0]] : 'bank cycle';
     }
@@ -389,7 +391,7 @@
     if (!stagedView) {
       try {
         const R = stagedRef();
-        stagedView = stagedTimes(stagedGeometry(p, t, bg, sg, pr, p.mdl_share, p.col_mid), R.g, R.kappa, t.logic_conf, pumps, p.mdl_share, p.od_ecc_logic);
+        stagedView = stagedTimes(stagedGeometry(p, t, bg, sg, pr, p.mdl_share, p.col_mid), R.g, R.kappa, t.logic_conf, pumps, p.mdl_share, p.od_ecc_logic, p.mdl_bgbus_sd);
       } catch (e) { stagedView = null; }
     }
     const dq_speed = p.mdl_bgbus_sd * p.bgbus_gbus_sd * p.gbus_tsv_sd * p.tsv_dq_sd * p.bgbuses_per_gbus;

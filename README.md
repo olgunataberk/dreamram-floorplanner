@@ -319,7 +319,7 @@ The panel also lists the per-pseudo-channel datapath as wires × Gb/s per wire a
 python3 tools/sweep_pin_rate.py --dreamram /path/to/DreamRAM [--rate 32] [--max-die-mm 20] [--csv out.csv]
 ```
 
-This asks which bank organisations reach a target pin rate. Every design is evaluated by DreamRAM itself, through `tools/export_floorplan.py` and its extensions, so it needs only Python and a DreamRAM checkout; the default sweep takes about 6 s. Options widen the search: `--bank-groups` (vertical × side-by-side pairs, e.g. `2x1,1x2`), `--banks`, `--mats`, `--ldls`, `--atoms` (column access size in bits) and `--models` (column-cycle models to run).
+This asks which bank organisations reach a target pin rate. Every design is evaluated by DreamRAM itself, through `tools/export_floorplan.py` and its extensions, so it needs only Python and a DreamRAM checkout; the default sweep (all eight column-cycle models) takes about 10 s. Options widen the search: `--bank-groups` (vertical × side-by-side pairs, e.g. `2x1,1x2`), `--banks`, `--mats`, `--ldls`, `--atoms` (column access size in bits) and `--models` (column-cycle models to run).
 
 **Fixed:**
 - HBM4 34/36 nm array, 1 SID, 32 channels on 4 dies, 2 pseudo-channels;
@@ -343,7 +343,7 @@ This asks which bank organisations reach a target pin rate. Every design is eval
 
 Takeaways:
 - **At 16 GB the fixed share barely matters.** Iso-capacity keeps banks large, so the wire share dominates, and no model gets a 16 GB bank much below about 1.8 ns. Removing the fixed time entirely makes things slightly worse: the wire share then takes the full 2 ns × ratio, and these ratios are near or above 1.
-- **32 Gb/s needs about 8–16 bank groups per pseudo-channel streaming at once,** against 2 today. With the BG-BUS window enforced it takes 16: stacking 8 groups per column lengthens the shared bus, so tCCD_L grows to 3.5–3.8 ns and eats most of the extra concurrency.
+- **32 Gb/s needs about 8–16 bank groups per pseudo-channel streaming at once,** against 2 today. This assumes the groups can alternate faster than DreamRAM's tCCD_S (see the caveat at the end of the staged section). With the BG-BUS window enforced it takes 16: stacking 8 groups per column lengthens the shared bus, so tCCD_L grows to 3.5–3.8 ns and eats most of the extra concurrency.
 - **The answer hinges on the BG-BUS window.** With the bank path alone, the same 16 banks per pseudo-channel regrouped as 8 groups × 2 banks reach 43 Gb/s at a 6% smaller die. The BG-BUS stage is a pessimistic bound for long buses (see the extension above), so the truth for a retimed bus lies between these two rows.
 - **TSVs are an area knob, not a rate limit.** For the smallest DreamRAM-model design:
 
@@ -403,15 +403,27 @@ With two groups alternating, the pin rate is `access bits × 2 / (32 DQs × tCCD
 
 ## Staged tCCD_L model (`tccd_staged`)
 
-DreamRAM's column cycle is one number: a 1 ns driver term plus a wire term. The staged model breaks it into the steps of one column read. tCCD_L is then the slower of two things:
-- the bank's own serial cycle (once per pump);
-- the stage the bank group shares (once per atom).
+DreamRAM's column cycle is one number: a 1 ns driver term plus a wire term. The staged model breaks it into the steps of one column read. tCCD_L is then the slower of two things, each paid once per pump (see [Pumps](#pumps)):
+- the bank's own serial cycle;
+- the stages the bank group shares.
 
 ```
-tCCD_L = max(pumps × bank cycle, shared stage)        tCCD_S = tCCD_L / 2 (as DreamRAM)
+tCCD_L = pumps × max(bank cycle, shared stage per pump)        tCCD_S = tCCD_L / 2 (as DreamRAM)
 ```
 
-Turn it on under **Parameters → Extensions → Column-cycle model: Staged**, or with `--set tccd_staged=1` in the exporter. Both implementations match to ≤ 4.8e-16 on 60 random staged designs. With it off, every bundled example is unchanged.
+Turn it on under **Parameters → Extensions → Column-cycle model: Staged**, or with `--set tccd_staged=1` in the exporter. Both implementations match to ≤ 4.5e-16 on 80 random staged designs (62 of them multi-pump, 40 with `mdl_bgbus_sd` = 2). With it off, every bundled example is unchanged.
+
+<a id="pumps"></a>
+**Pumps.** One column cycle (a "pump": one CSL firing) moves `min_atom = mats × ldls_mdls / (2^(ha_layout − ha_double_ldls) × subchannels)` bits over the MDLs. With coupled rows, divide by `coupled_rows` as well, because a READ reaches only one logical row's MATs. When the column access (`atom_size`, 256 bits = 32 B in HBM3/HBM4) is wider than that, the bank fires `pumps = atom_size / min_atom` CSLs in a row on the same open row, a different column each time. Each slice goes over the MDL, the BG-BUS and the GBUS separately.
+- **DreamRAM's rules.** DreamRAM keeps `core_tck` per pump and multiplies tCCD_L (4 peripheral cycles), tCCD_S (2) and tRTP (5) by the pump count; `peri_tck = core_tck / 4`. It discards designs with `min_atom > atom` (status 6), a non-integer `min_atom` (7), a non-integer pump count (8) or more than 8 pumps (10).
+- **What it trades.** Pumping trades wires for time. The MDL, BG-BUS, GBUS, TSV and DQ widths all follow `min_atom`, not `atom_size`. Per-wire and per-pin rates are unchanged, but a bank group's throughput falls as 1 / pumps.
+  - The sweeps below hold 32 data DQs fixed, so for them more pumps means a lower pin rate.
+  - Every datapath toggle is counted per pump in energy. Data energy per atom therefore stays about the same; the real cost is the extra CSL firings.
+- **Examples.**
+  - The HBM2 cross-check design below: 16 MATs × 8 MDLs = 128 bits per cycle, so a 256-bit atom takes 2 pumps.
+  - The `high_bw_subchannels` example: 8 pumps.
+  - In the Timing tab, a 2-pump design draws two CSL/LDL/MDL/IOSA/ECC/BG-BUS slices per read.
+- **The staged model pays every shared stage per pump or per BG-BUS transfer.** This covers OD-ECC + DBI, the BG-BUS window, the shared IOSA and the shared MDL line. Ryu et al. decode each BG-BUS word's codewords inside tCCD_L, and DreamRAM generates DBI per BG-BUS transfer. So pumping never amortises a shared stage, and 128 B accesses gain nothing over 64 B.
 
 ### Is the MDL shared by the banks of a group?
 
@@ -440,12 +452,12 @@ Each stage is a device delay in FO4 units plus, for the long lines, the line's d
 | IOSA resolve | 4 | — | — |
 | Equalise | 1 + 4 × MDL load | half the MDL RC | — |
 
-| Shared stage (per atom) | FO4 |
-| --- | --- |
-| OD-ECC decode/correct + DBI (`od_ecc_logic`) | 24 |
-| BG-BUS window | 4 + 0.15 × repeated-wire flight (2.5 FO4/mm) |
-| Shared IOSA occupancy (`mdl_share` ≥ 1) | 6 per pump |
-| Shared MDL line (`mdl_share = 2`) | pumps × (MDL + IOSA + equalise) |
+| Shared stage | FO4 | Paid |
+| --- | --- | --- |
+| OD-ECC decode/correct + DBI (`od_ecc_logic`) | 24 | per pump |
+| BG-BUS window | 4 + 0.15 × repeated-wire flight (2.5 FO4/mm) | per BG-BUS transfer (pumps × `mdl_bgbus_sd`) |
+| Shared IOSA occupancy (`mdl_share` ≥ 1) | 6 | per pump |
+| Shared MDL line (`mdl_share = 2`) | MDL + IOSA + equalise | per pump |
 
 "Load" is the line's C × L relative to the calibration design, using DreamRAM's own per-µm capacitances and pitch ratios. Resistance uses ρ_eff = 3 × 10⁻⁸ Ω·m. M3 CSL/MDL lines are 2 × BL pitch wide (half of DreamRAM's minimum 4 × BL pitch) with aspect ratio 2; M2 LDLs are half the LDL pitch wide. One FO4 is κ · (f / 16 nm)^0.9, the same logic scaling DreamRAM applies to its peripheral tiles.
 
@@ -489,6 +501,57 @@ tCCD_L in ns / implied pin rate in Gb/s. The rate assumes each design keeps its 
 - **Large groups therefore need per-bank IOSAs, or IOSAs shared by a pair of banks.** That fits the Samsung patent's 2–4-bank sharing.
 - **With per-bank IOSAs the picture is better than DreamRAM's.** Every HBM4/HBM5 design here reaches 0.84–1.75 ns. The 32 Gb/s design's limit moves from its banks to OD-ECC + DBI (24 FO4 = 0.84 ns at the HBM4 node).
 - **The default stays `mdl_share = 1`** because that is the HBM3 organisation the model is calibrated on.
+
+### 32 Gb/s with 2 bank groups, staged
+
+```bash
+python3 tools/sweep_pin_rate.py --dreamram /path/to/DreamRAM --models staged_ioctl,staged_bank,staged_bank_mid \
+    --bank-groups 2x1,1x2 --banks 2,4,8,16 --mats 16,32,64 --ldls 8,16,32,64 --atoms 256,512,1024 --max-die-mm 40
+```
+
+This is the same 2-group search as above (about 14 s), with three staged models:
+- `staged_ioctl`: IOSA at the I/O control;
+- `staged_bank`: per-bank IOSA;
+- `staged_bank_mid`: per-bank IOSA with a mid-bank column decoder.
+
+The table gives the highest pin rate with at least 16 banks per pseudo-channel, as in HBM4, and the number of such designs reaching 32 Gb/s:
+
+| Column-cycle model | 32 B access | 64 B access | 128 B access |
+| --- | --- | --- | --- |
+| IOSA at the I/O control | 10.6 Gb/s (bank cycle), 0 pass | 19.2 (bank cycle), 0 | 19.2, 0 |
+| Per-bank IOSA | 19.0 (OD-ECC + DBI), 0 | **38.0** (OD-ECC + DBI), 223 | 38.0, 223 |
+| Per-bank IOSA, mid-bank decoder | 19.0 (OD-ECC + DBI), 0 | **38.0** (OD-ECC + DBI), 362 | 38.0, 362 |
+
+The smallest passing designs at 64 B:
+- **Per-bank IOSA:** 2 groups × 8 banks, 8 × 1024-WL subarrays, 16 × 1024-BL MATs, 64 MDLs, two coupled rows.
+  - tCCD_L 0.99 ns (bank cycle), 32.2 Gb/s.
+  - Die 14.30 × 14.37 mm = 205.5 mm² (+18% vs. HBM4 coupled).
+  - Row-miss latency 95 ns; 199 W.
+- **Mid-bank decoder:** 2 groups × 8 banks, 16 × 1024-WL subarrays, 16 × 512-BL MATs, 32 MDLs.
+  - 0.89 ns, 35.9 Gb/s.
+  - Die 8.62 × 23.25 mm = 200.3 mm². This ties on area with two routing variants; one of them, 38.0 Gb/s, is limited by OD-ECC.
+  - 142 ns; 288 W.
+
+Takeaways:
+- **32 B accesses cannot reach 32 Gb/s with 2 groups.** That needs tCCD_L ≤ 0.5 ns. With OD-ECC + DBI inside tCCD_L (24 FO4 = 0.84 ns at the HBM4 node), the cap is 19 Gb/s. Even with ECC pipelined out of the loop, the bank cycle caps it at 25.7 Gb/s (29.2 with mid-bank decoders). This held under every single change to the priors tried below.
+- **IOSAs at the I/O control never reach it**, at any access size or prior: the farthest bank's MDL is too long.
+- **With per-bank IOSAs, 64 B accesses reach 32–38 Gb/s.** The limit is then OD-ECC + DBI: 64 B at 32 Gb/s leaves 1.0 ns per access, and the ECC prior has 16% margin (it breaks at about 28.5 FO4).
+- **The extra area is all TSVs.** These designs carry 544 GBUS bits per pseudo-channel at GBUS→TSV 1:1 (81 mm² of TSV region against 44 for HBM4 coupled); their non-TSV area is smaller than HBM4's. At GBUS→TSV 2:1 the 205.5 mm² design shrinks to about 168 mm².
+
+**How far to trust this.** An independent re-check reproduced the 32 B and 64 B numbers above from the exporter's CLI, and both CSVs exactly. It also found the following:
+- **JEDEC disagrees with the per-bank models.** JESD270-4 gives HBM4's 16-bank organisation as 2 groups × 8 banks with tCCD_L = max(4 nCK, 2.5 ns). For that organisation, the HBM4 coupled reference, the three models give 3.21 ns (I/O-control IOSA), 0.99 ns (per bank) and 0.84 ns (mid-bank). The only public HBM4 number is closest to the I/O-control model and 2.5–3× slower than the per-bank ones. It is a cross-vendor minimum, so it may be conservative. Fitting κ to it under the per-bank models leaves no 2-group design at 32 Gb/s. Fitting it under the I/O-control model lets 15 designs pass at 64 B. No single κ fits both the HBM3 and HBM4 numbers.
+- **The calibration choice decides the 64 B result.** Ryu et al. do not say where HBM3's IOSA sits. Calibrating on HBM3 with per-bank IOSAs raises κ to 56.8 ps, and then 64 B tops out at 28.8 Gb/s with nothing passing. Halving ρ_eff does the same.
+- **Effect of each prior alone.** Changed one at a time (ECC 12/0/36 FO4, load-dependent FO4 × 0.5 / 1.5, ρ 2 / 4.5 × 10⁻⁸, MDL device term, BG-BUS launch):
+  - Per-bank 64 B passes in 9 of 11 runs; it fails at ECC 36 FO4 and at load FO4 × 0.5.
+  - 32 B never passes. With ρ = 4.5 × 10⁻⁸ and ECC ≤ 18 FO4 together, 6 designs (2 × 16 banks, four coupled rows) reach 33 Gb/s.
+- **Not modelled:**
+  - per-bank IOSA area (`mdl_share` changes timing only);
+  - the command/address rate (32 Gb/s needs a 4 GHz CK for 64 B bursts);
+  - a GBUS window (Ryu found 1 ns too short and added a second GBUS set);
+  - thermals: these stacks draw about 200–290 W against 51 W for HBM4 coupled.
+- **Footprint.** None of the dies fits HBM4's 14.2 × 11.0 mm footprint (MO-362). The DreamRAM HBM4 reference doesn't either: it is 15.10 × 11.52 mm.
+
+The default sweep (2–16 bank groups) has one caveat that applies to every model, not only the staged ones. It credits all bank groups alternating onto the GBUS, i.e. tCCD_S = tCCD_L / groups. DreamRAM's own tCCD_S is tCCD_L / 2. With more than 2 groups, the pin rates in the first table above therefore assume a command rate and a GBUS window that DreamRAM doesn't check. Capping at DreamRAM's tCCD_S leaves no default-sweep design at 32 Gb/s.
 
 <a id="timing-tab"></a>
 ### Timing tab

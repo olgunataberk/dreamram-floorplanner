@@ -181,7 +181,9 @@ _BASELINE_REFS = {}
 
 # ---- staged column-cycle model (tccd_staged) ---------------------------------------------------------------
 # Device delays in FO4-equivalents at the reference load: (fixed, load-dependent). The load-dependent part scales
-# with the line's total capacitance relative to the calibration design. js/model.js mirrors this table.
+# with the line's total capacitance relative to the calibration design. The shared stages are paid per pump (OD-ECC,
+# IOSA) or per BG-BUS transfer (pumps x mdl_bgbus_sd), since each pump's MDL word crosses them separately.
+# js/model.js mirrors this table.
 STAGED = {
     'csl': (4, 4),     # column decoder + CSL driver charging the CSL
     'ldl': (1, 4),     # column switch on, BLSA develops the LDL pair
@@ -189,8 +191,8 @@ STAGED = {
     'iosa': (4, 0),    # I/O (global) sense amp resolves
     'eq': (1, 4),      # MDL / LDL equalise back to mid-rail before the next CSL
     'iosa_shared': 6,  # shared IOSA occupancy per pump (resolve + precharge), mdl_share >= 1
-    'ecc': 24,         # OD-ECC syndrome / decode / correct + DBI, once per atom (Ryu et al.: inside tCCD_L)
-    'bus_launch': 4,   # BG-BUS launch + capture (setup / hold)
+    'ecc': 24,         # OD-ECC syndrome / decode / correct + DBI per pump's MDL word (Ryu et al.: inside tCCD_L)
+    'bus_launch': 4,   # BG-BUS launch + capture (setup / hold) per transfer
     'bus_skew': 0.15,  # BG-BUS window grows with this fraction of the repeated-wire flight time
     'bus_fo4_mm': 2.5,  # repeated-wire flight time per mm
     'rho': 3.0e-8,     # ohm m, effective resistivity of narrow M2/M3 lines
@@ -217,8 +219,8 @@ def staged_geometry(dram, tech, share, col_mid):
                 c_csl=per_um(tech._c_csl, csl_r), c_mdl=per_um(tech._c_mdl, mdl_r), c_ldl=tech.scale_cap(tech._c_ldl))
 
 
-def staged_times(g, ref, kappa, logic_conf, pumps, share, ecc):
-    """(bank cycle per pump, shared stage per atom, bank parts, shared parts) in ns."""
+def staged_times(g, ref, kappa, logic_conf, pumps, share, ecc, bus_sd=1):
+    """(bank cycle per pump, shared stage per atom, bank parts, shared parts per atom) in ns."""
     fo4 = kappa * (g['f'] / 0.016) ** logic_conf
     rc = lambda r, c, L: 0.38 * r * c * L * L * 1e-3  # distributed RC (Elmore), ohm * pF = ps
     load = lambda k: g['c_' + k] * g['L_' + k] / (ref['c_' + k] * ref['L_' + k])
@@ -232,7 +234,8 @@ def staged_times(g, ref, kappa, logic_conf, pumps, share, ecc):
     }
     bank = sum(parts.values())
     flight = g['L_bus'] / 1000 * STAGED['bus_fo4_mm'] * fo4
-    shared = {'ecc': STAGED['ecc'] * fo4 if ecc else 0.0, 'bgbus': STAGED['bus_launch'] * fo4 + STAGED['bus_skew'] * flight}
+    shared = {'ecc': pumps * STAGED['ecc'] * fo4 if ecc else 0.0,
+              'bgbus': pumps * bus_sd * (STAGED['bus_launch'] * fo4 + STAGED['bus_skew'] * flight)}
     if share >= 1:
         shared['iosa_shared'] = pumps * STAGED['iosa_shared'] * fo4
     if share == 2:
@@ -386,11 +389,13 @@ def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgb
         def staged(self, tech):
             ref, kappa = self._staged_ref
             g = staged_geometry(self, tech, mdl_share, col_mid)
-            return staged_times(g, ref, kappa, tech.logic_scale_conf, self.pumps_per_atom(), mdl_share, od_ecc_logic)
+            return staged_times(g, ref, kappa, tech.logic_scale_conf, self.pumps_per_atom(), mdl_share, od_ecc_logic,
+                                self.mdl_bgbus_sd)
 
         def core_tck(self, tech):
             if tccd_staged:
-                # tCCD_L = core_tck x pumps (Hbm.tccdl) = max(pumps x bank cycle, shared stage per atom)
+                # tCCD_L = core_tck x pumps (Hbm.tccdl) = max(pumps x bank cycle, shared stage per atom); every shared
+                # stage is paid per pump or per transfer, so pumping never amortises it
                 bank, shared, _, _ = self.staged(tech)
                 return max(bank, shared / self.pumps_per_atom())
             t = self.bank_stage_tck(tech)

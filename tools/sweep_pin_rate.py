@@ -7,7 +7,8 @@ this needs a DreamRAM checkout but nothing beyond Python and DreamRAM's own requ
 
 Fixed: 34/36 nm array, 1 SID, 32 channels (8 per die, 4 dies), 2 pseudo-channels, 16 GB per stack,
 1 KiB host row, one channel row. Extensions on: tccd_bgbus (tCCD_L is the slower of the bank path and
-the BG-BUS window; one column-cycle model turns it off), bw_bg_cap and tsv_chain.
+the BG-BUS window; one column-cycle model turns it off), bw_bg_cap and tsv_chain. The staged models
+(tccd_staged) replace both stages with the staged column cycle, for three IOSA / column-decoder placements.
 
 Swept: bank groups (vertical x side by side), banks per group, MAT size and count, MDLs per MAT,
 MDL/CSL routing, BLSA/BRVSA, coupled rows and the column access size (atom); subarrays per bank follow
@@ -47,7 +48,12 @@ MODELS = [
     # bracket for the BG-BUS window: tCCD_L from the bank column path only (DreamRAM's own assumption)
     ('half_bankonly', '0.5 ns fixed, node-scaled + CxL wires, bank path only (no BG-BUS window)',
      dict(tck_fixed=0.5, tck_fixed_scale=1, tck_wire=1, tccd_bgbus=0)),
+    # staged model (tccd_staged): max(pumps x bank cycle, shared bank-group stage), by where the IOSA sits
+    ('staged_ioctl', 'staged: IOSA shared at the I/O control (HBM3 calibration)', dict(tccd_staged=1, mdl_share=1)),
+    ('staged_bank', 'staged: per-bank IOSA', dict(tccd_staged=1, mdl_share=0)),
+    ('staged_bank_mid', 'staged: per-bank IOSA, mid-bank column decoder', dict(tccd_staged=1, mdl_share=0, col_mid=1)),
 ]
+STAGE_NAMES = {'ecc': 'OD-ECC + DBI', 'bgbus': 'BG-BUS window', 'iosa_shared': 'shared IOSA', 'mdl_line': 'shared MDL line'}
 FIXED = dict(sids=1, channels=32, ch_per_die=8, pch=2, channel_rows=1, salp_groups=1, tccd_bgbus=1, bw_bg_cap=1,
              tsv_chain=1, mdl_bgbus_sd=1, bgbus_gbus_sd=1, gbus_tsv_sd=1)
 GB, PAGE_BITS, DQ_DATA = 16, 8192, 32
@@ -100,10 +106,17 @@ def evaluate(a, d, ext, sd=1):
     r_gbus = r_bg * p['bgbus_gbus_sd'] * p['bgbuses_per_gbus']
     dies, die_w, non_tsv, cmd_y, data_y, other_y = dram.calc_stack_dims(tech)
     die_h = non_tsv + cmd_y + data_y + other_y
-    t_bank, t_bus = dram.bank_stage_tck(tech), dram.bgbus_stage_tck(tech)
+    if p.get('tccd_staged'):
+        # staged: bank cycle vs the shared stage, both per pump (tck_bank, tck_shared)
+        bank, shared, _, sh = dram.staged(tech)
+        t_bank, t_bus = bank, shared / dram.pumps_per_atom()
+        limiter = 'bank cycle' if t_bank >= t_bus else STAGE_NAMES[max(sh, key=sh.get)]
+    else:
+        t_bank, t_bus = dram.bank_stage_tck(tech), dram.bgbus_stage_tck(tech)
+        limiter = 'BG-BUS window' if p['tccd_bgbus'] and t_bus > t_bank else 'bank column path'
     return dict(d, sd=sd, tsv_dq_sd=s / sd, bgs=d['vert_bg'] * d['horiz_bg'], pumps=dram.pumps_per_atom(),
-                tccdl=m['tccdl'], tck_bank=t_bank, tck_bgbus=t_bus,
-                limiter='BG-BUS window' if p['tccd_bgbus'] and t_bus > t_bank else 'bank column path',
+                tccdl=m["tccdl"], tck_bank=t_bank, tck_shared=t_bus,
+                limiter=limiter,
                 pin=m['dq_datarate_gbps'], bw=m['bw_gbytes'],
                 bgbus_wires=int(n['bgbus']), bgbus_rate=r_bg, gbus_wires=int(n['gbus']), gbus_rate=r_gbus,
                 tsv_wires=int(n['tsv']), tsv_rate=r_gbus * sd,
