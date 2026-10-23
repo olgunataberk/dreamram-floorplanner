@@ -33,7 +33,8 @@
   "coupled_lsb": 0,
   "edge_pairing": 0,
   "ioctl_h": 0,
-  "channel_rows": 2
+  "channel_rows": 1,
+  "tccd_bgbus": 1
  },
  "tech": {
   "f": 0.01275,
@@ -45,7 +46,7 @@
   "tsv_pitch": 25.0,
   "ubump_pitch": 40.0,
   "tsv_koz": 4.0,
-  "max_die_um": 23000.0,
+  "max_die_um": 18000.0,
   "max_stack_dies": 16.0,
   "md_ecc_prop": 0.0625,
   "od_ecc_prop": 0.125,
@@ -66,13 +67,13 @@
   "mbus_h": 276.8939836659546,
   "center_w": 86.88945983036766,
   "dies": 4,
-  "die_w": 8615.289414889963,
-  "die_h": 22024.881647898037,
-  "non_tsv_y": 16234.991717032246,
-  "cmd_tsv_y": 916.0607503635104,
-  "data_tsv_y": 3902.1808586913166,
-  "other_tsv_y": 971.6483218109654,
-  "cell_eff": 0.30504649307641835
+  "die_w": 17230.578829779926,
+  "die_h": 11153.544953023053,
+  "non_tsv_y": 8255.9428503491,
+  "cmd_tsv_y": 457.8176170903178,
+  "data_tsv_y": 1950.1841351379774,
+  "other_tsv_y": 489.60035044565905,
+  "cell_eff": 0.3011873326109405
  },
  "derived": {
   "capacity_gb": 16.0,
@@ -83,7 +84,9 @@
   "dq_count": 4352,
   "row_cmd_bits": 10,
   "col_cmd_bits": 8,
-  "total_area_mm2": 948.7536486267009
+  "total_area_mm2": 960.9101777227887,
+  "tck_bank_stage": 1.740047892542739,
+  "tck_bgbus_stage": 1.9414021783762503
  },
  "wire_counts": {
   "row": 10.0,
@@ -100,39 +103,39 @@
   "dq": 34.0
  },
  "wire_lengths": {
-  "od-row-avg": 7092.139886523935,
-  "od-row-max": 11012.440823949019,
+  "od-row-avg": 3651.233755757229,
+  "od-row-max": 5576.772476511527,
   "mwl": 451.56612860025507,
   "lwl": 20.02498696712678,
   "bl": 35.33824,
-  "od-col-avg": 7317.922950824062,
-  "od-col-max": 11464.006952549275,
+  "od-col-avg": 3877.0168200573567,
+  "od-col-max": 6028.338605111782,
   "csl": 462.72300965936495,
   "ldl": 18.708479999999998,
   "mdl": 462.72300965936495,
-  "bgbus+gbus": 8117.495858516123,
+  "bgbus+gbus": 4127.97142517455,
   "tsv-n-layers-avg": 2.0,
   "tsv-n-layers-max": 4.0,
-  "base": 6953.6928946909575
+  "base": 3512.786763924252
  },
  "status": 0,
  "metrics": {
   "capacity_gbytes": 16.0,
-  "bw_gbytes": 4707.9163942028035,
-  "worst_latency_ns": 111.93144363502017,
-  "metric_e_per_bit_closed": 3.9523698413851327,
-  "metric_e_per_bit_seq": 2.5471300238165266,
-  "worst_power_w": 148.85941417767842,
-  "total_area_mmmm": 948.726875,
-  "die_x_mm": 8.615,
-  "die_y_mm": 22.025,
-  "cell_eff": 0.30504649307641835,
-  "core_freq_ghz": 0.5746968254642095,
-  "dq_datarate_gbps": 9.195149207427352,
-  "tcl": 58.82594703521793,
+  "bw_gbytes": 4219.6305800231585,
+  "worst_latency_ns": 82.5448788609032,
+  "metric_e_per_bit_closed": 3.0076875239209837,
+  "metric_e_per_bit_seq": 1.7851030326479784,
+  "worst_power_w": 101.53064200872895,
+  "total_area_mmmm": 960.9728700000001,
+  "die_x_mm": 17.231,
+  "die_y_mm": 11.154,
+  "cell_eff": 0.3011873326109405,
+  "core_freq_ghz": 0.5150916235379832,
+  "dq_datarate_gbps": 8.241465976607731,
+  "tcl": 29.43938226110097,
   "trcd": 26.55274829990112,
   "trp": 26.55274829990112,
-  "tccdl": 1.740047892542739,
+  "tccdl": 1.9414021783762503,
   "page_size_bytes": 1024.0
  }
 }

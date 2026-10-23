@@ -65,7 +65,7 @@
     pages_per_bgbus_mux: 1, mdl_bgbus_sd: 1, bgbuses_per_gbus: 2, bgbus_gbus_sd: 1, gbus_tsv_sd: 1, tsv_dq_sd: 8,
     _tck: 2, _tcl: 28,
     // extensions beyond DreamRAM (tools/export_floorplan.py implements the same in an Hbm subclass)
-    coupled_rows: 1, coupled_lsb: 0, edge_pairing: 0, ioctl_h: 0, channel_rows: 1,
+    coupled_rows: 1, coupled_lsb: 0, edge_pairing: 0, ioctl_h: 0, channel_rows: 1, tccd_bgbus: 0,
   };
 
   // Parameter UI: groups follow DreamRAM's input levels; `values` are the hbm_sweep_default.json ranges.
@@ -101,6 +101,7 @@
       ['coupled_lsb', 'Coupled-row address bit', [[0, 'MSB (Row[i] ↔ Row[i+N/2], DDR4)'], [1, 'LSB (adjacent rows, LPDDR4)']]],
       ['edge_pairing', 'Open-BL edge subarrays', [[0, 'Dummy half-subarrays (DreamRAM)'], [1, 'Paired edge subarrays (store data)']]],
       ['channel_rows', 'Channel rows per die', [[1, '1 · each channel spans both halves (DreamRAM)'], [2, '2 · half the channels above, half below the TSVs']]],
+      ['tccd_bgbus', 'tCCD_L from', [[0, 'Bank column path only (DreamRAM)'], [1, 'Slower of bank path and BG-BUS window']]],
       ['ioctl_h', 'I/O-control height / BG', [[0, 'DreamRAM OD-ECC (1% of baseline bank)'], [25, '25 µm'], [50, '50 µm'], [100, '100 µm'], [150, '150 µm']]],
     ] },
     { group: 'Data bus', items: [
@@ -276,7 +277,16 @@
     const c_csl = t._c_csl * ts.capScale, c_mdl = t._c_mdl * ts.capScale, c_ldl = t._c_ldl * ts.capScale;
     const denom = (c_csl + 2 * c_mdl) * ref.bank_y + res * c_ldl * _mat_width;
     const numer = (rc(pr.csl_ratio, t.c_within_csl_mdl) * c_csl + 2 * rc(pr.mdl_ratio, t.c_within_csl_mdl) * c_mdl) * bg.bank_y + res * c_ldl * mat_width;
-    const core_tck = 1 + (B._tck - 1) * numer / denom;
+    // Shared BG-BUS window (tccd_bgbus extension): a repeated wire, delay linear in DreamRAM's bus length
+    // (Hbm.wire_lengths 'bgbus+gbus' = non_tsv_y / 2) times its pitch-dependent capacitance (as in tCL),
+    // calibrated so the baseline bank group's window equals the baseline tCK
+    const crat = (r, q) => (1 - q) * r + q / r;
+    const pitch = bg.bank_x / (wc.bgbus * sg.pg.ind_pages / (p.pages_per_bgbus_mux * p.mdl_bgbus_sd) * p.vert_bg / 2 * pow(t.dbi, t.dbi_bgbus));
+    const _pitch = ref.bank_x / (ref.n_bgbus / (B.pages_per_bgbus_mux * B.mdl_bgbus_sd) * B.vert_bg / 2 * pow(t.dbi, t.dbi_bgbus));
+    const bgr = pitch / _pitch;
+    const tck_bank = 1 + (B._tck - 1) * numer / denom; // Hbm.core_tck: CSL + MDL over the bank, LDL over a MAT
+    const tck_bgbus = 1 + (B._tck - 1) * (sg.non_tsv_y / 2) * crat(bgr, t.c_within_sparse) / (ref.non_tsv_y / 2);
+    const core_tck = p.tccd_bgbus ? Math.max(tck_bank, tck_bgbus) : tck_bank;
     const dq_speed = p.mdl_bgbus_sd * p.bgbus_gbus_sd * p.gbus_tsv_sd * p.tsv_dq_sd * p.bgbuses_per_gbus;
     const bw = wc.dq_count * dq_speed / (core_tck * (1 + t.md_ecc) * 8);
 
@@ -290,10 +300,6 @@
     }
     const trp = tsig + (t._trcd - t._trcd_signal) * full;
 
-    const crat = (r, q) => (1 - q) * r + q / r;
-    const pitch = bg.bank_x / (wc.bgbus * sg.pg.ind_pages / (p.pages_per_bgbus_mux * p.mdl_bgbus_sd) * p.vert_bg / 2 * pow(t.dbi, t.dbi_bgbus));
-    const _pitch = ref.bank_x / (ref.n_bgbus / (B.pages_per_bgbus_mux * B.mdl_bgbus_sd) * B.vert_bg / 2 * pow(t.dbi, t.dbi_bgbus));
-    const bgr = pitch / _pitch;
     const tsv_c = t._c_tsv * (t.tsv_pitch / t._tsv_pitch) * (t.tsv_height / t._tsv_height) + t._c_load;
     const rise = -Math.log(1 - 0.8);
     const _dies = B.sids * B.channels / B.ch_per_die;
@@ -309,7 +315,8 @@
     const bg_rate = p.atom_size / 8 / tccdl; // GB/s of data per bank group
     const pc_rate = bw / (p.channels * p.pch); // GB/s per pseudo-channel at peak
     return {
-      core_tck, bw, trcd, trp, tcl, latency: tcl + trcd + trp, dq_rate: dq_speed / core_tck,
+      core_tck, tck_bank, tck_bgbus, limiter: tck_bgbus > tck_bank ? 'BG-BUS window' : 'bank column path',
+      bw, trcd, trp, tcl, latency: tcl + trcd + trp, dq_rate: dq_speed / core_tck,
       tccdl, tccds, bg_rate, pc_rate, bgs_needed: pc_rate / bg_rate, bgs_per_pc: p.horiz_bg * p.vert_bg,
     };
   }
@@ -356,7 +363,7 @@
     const bb = bankGeom(B, t);
     const ref0 = { bank_x: bb.bank_x, bank_y: bb.bank_y };
     const bs = stackGeom(B, t, bb, ref0);
-    const ref = Object.assign(ref0, { die_h: bs.die_h, n_bgbus: wireCounts(B, t, bs.pg).bgbus });
+    const ref = Object.assign(ref0, { die_h: bs.die_h, non_tsv_y: bs.non_tsv_y, n_bgbus: wireCounts(B, t, bs.pg).bgbus });
 
     const bg = bankGeom(p, t);
     const sg = stackGeom(p, t, bg, ref);
@@ -422,6 +429,8 @@
       add('tRCD', m.timing.trcd, ex.metrics.trcd);
       add('tRP', m.timing.trp, ex.metrics.trp);
       add('tCCD_L', m.timing.tccdl, ex.metrics.tccdl);
+      add('bank-path stage', m.timing.tck_bank, ex.derived && ex.derived.tck_bank_stage);
+      add('BG-BUS stage', m.timing.tck_bgbus, ex.derived && ex.derived.tck_bgbus_stage);
     }
     return rows;
   };

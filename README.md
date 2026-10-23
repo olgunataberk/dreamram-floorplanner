@@ -168,33 +168,35 @@ The scenario is a hypothetical HBM5 with twice HBM4's DQ pins and twice its chan
 - 34/36 nm array.
 - At least 8 Gb/s.
 
-**Search.** Every bank organisation meeting those constraints was run through DreamRAM's exporter. The sweep covered:
+**Search.** Every bank organisation meeting those constraints was run through DreamRAM's exporter **with the BG-BUS-limited tCCD_L extension on** (`tccd_bgbus` = 1, see below). The sweep covered:
 - bank-group tiling: 2 vertical, or 2 side by side;
 - MAT size, MAT count, MDLs, MDL/CSL routing and layer sharing;
 - BLSA vs BRVSA;
 - coupled rows;
 - 1 or 2 channel rows.
 
-That gave 490 valid designs; 172 have 1 KiB rows and run at ≥ 8 Gb/s. **None fits DreamRAM's 13 mm die limit.** Four representative designs are in **Example designs → HBM5 exploration**, each exported with a die limit just above its size:
+That gave 490 valid designs; 204 have 1 KiB rows and 83 of those still run at ≥ 8 Gb/s once the shared bus is a pipeline stage. **None fits DreamRAM's 13 mm die limit.** Two-channel-row layouts drop out: each channel's bank groups all sit on one side, so its BG-BUS is 5–8 mm long and sets tCCD_L. Four designs are in **Example designs → HBM5 exploration**, each exported with the extension on and a die limit just above its size:
 
-| | HBM4 (reference) | HBM4 MATs + coupled 2 KiB WL | Smallest die | Near-smallest, 1 channel row | HBM4 latency |
+| | HBM4 (reference) | Smallest die | HBM4 latency | Lowest latency | HBM4 MATs + coupled 2 KiB WL |
 | --- | --- | --- | --- | --- | --- |
 | Banks / PC, rows / bank | 16, 16 K | 16, 8 K | 16, 8 K | 16, 8 K | 16, 8 K |
-| Bank organisation | 32 × 512-BL MATs, coupled, 16 × 512 WL | same, 8 × 512 WL | 16 × 512-BL MATs, 8 × 1024 WL, 2 CSL/MDL layers | same | 16 × 512-BL MATs, 16 × 512 WL, 2 layers |
-| Channel rows | 1 | 2 | 2 | 1 | 1 |
-| Bank (µm) | 857 × 503 | 857 × 304 | 452 × 463 | 452 × 463 | 452 × 503 |
-| Die | 15.10 × 10.28 mm = 155.3 mm² | 15.10 × 13.89 mm = 209.7 mm² (+35%) | 8.62 × 22.02 mm = 189.8 mm² (+22%) | 17.23 × 11.15 mm = 192.2 mm² (+24%) | 17.23 × 11.52 mm = 198.5 mm² (+28%) |
-| TSV region | 25.0 mm² | 49.9 mm² | 49.9 mm² | 49.9 mm² | 49.9 mm² |
-| Data rate / bandwidth | 8.27 Gb/s · 2,117 GB/s | 10.20 Gb/s · 5,224 GB/s | 9.20 Gb/s · 4,708 GB/s | 9.20 Gb/s · 4,708 GB/s | 8.87 Gb/s · 4,541 GB/s |
-| Row-miss latency (tCL + tRCD + tRP) | 63.7 (27.7 + 18 + 18) | 74.2 (38.2 + 18 + 18) | 111.9 (58.8 + 26.6 + 26.6) | 82.5 (29.4 + 26.6 + 26.6) | 63.6 (30.3 + 16.6 + 16.6) |
-| Energy / bit (closed / stream) | 3.12 / 1.79 pJ | 3.38 / 1.99 pJ | 3.95 / 2.55 pJ | 3.01 / 1.79 pJ | 2.68 / 1.81 pJ |
-| Worst-case power | 53 W | 141 W | 149 W | 113 W | 97 W |
+| Bank groups | 2 vertical | 2 vertical | 2 vertical | 2 side by side | 2 vertical |
+| Bank organisation | 32 × 512-BL MATs, coupled, 16 × 512 WL | 16 × 512-BL MATs, 8 × 1024 WL, 2 CSL/MDL layers | 16 × 512-BL MATs, 16 × 512 WL, 2 layers | 16 × 512-BL MATs, 8 × 1024 WL, 2 layers, BRVSA | 32 × 512-BL MATs, coupled, 8 × 512 WL |
+| Channel rows | 1 | 1 | 1 | 1 | 1 |
+| Die | 15.10 × 10.28 mm = 155.3 mm² | 17.23 × 11.15 mm = 192.2 mm² (+24%) | 17.23 × 11.52 mm = 198.5 mm² (+28%) | 34.46 × 5.80 mm = 199.7 mm² (+29%) | 30.21 × 7.08 mm = 214.0 mm² (+38%) |
+| TSV region | 25.0 mm² | 49.9 mm² | 49.9 mm² | 50.1 mm² | 50.0 mm² |
+| Column stages (bank / BG-BUS) | 1.93 / 2.01 ns (not enforced) | 1.74 / **1.94** ns | 1.80 / **1.98** ns | **1.76** / 1.52 ns | 1.57 / **1.64** ns |
+| Data rate / bandwidth | 8.27 Gb/s · 2,117 GB/s | 8.24 Gb/s · 4,220 GB/s | 8.07 Gb/s · 4,130 GB/s | 9.12 Gb/s · 4,668 GB/s | 9.79 Gb/s · 5,010 GB/s |
+| Row-miss latency (tCL + tRCD + tRP) | 63.7 (27.7 + 18 + 18) | 82.5 (29.4 + 26.6 + 26.6) | 63.6 (30.3 + 16.6 + 16.6) | 57.3 (15.6 + 15.1 + 26.6) | 55.3 (19.3 + 18 + 18) |
+| Energy / bit (closed / stream) | 3.12 / 1.79 pJ | 3.01 / 1.79 pJ | 2.68 / 1.81 pJ | 2.56 / 1.43 pJ | 2.78 / 1.50 pJ |
+| Worst-case power | 53 W | 102 W | 88 W | 96 W | 111 W |
 
 Takeaways:
-- **The die grows 22–35%.** About 25 mm² comes from the doubled TSV region (every channel's TSVs on every die). The rest is per-bank overhead: twice as many banks, each with its own row and column decoders, dummy and edge rows, and an I/O-control share, over the same total number of cells.
-- **1 KiB physical rows win.** Halving the rows per bank makes the 1 KiB-wide bank (16 MATs × 512 BL) short enough to stay fast, and its decoders and LWDs cost less than HBM4's 2 KiB coupled wordline. The coupled design is still the fastest (10.2 Gb/s) because its bank is so short, but it is the largest.
-- **HBM4 latency costs about 28% area.** With 512-WL MATs and one channel row, the HBM5 die matches HBM4's 63.6 ns row-miss latency at 198.5 mm². 1024-WL MATs save 3% area but add 10 ns to tRCD/tRP. A tall two-row die adds as much again to tCL.
-- **The pin rate is DreamRAM's estimate,** set by bank geometry relative to its HBM3 calibration.
+- **The die grows 24–38%.** About 25 mm² comes from the doubled TSV region (every channel's TSVs on every die). The rest is per-bank overhead: twice as many banks, each with its own decoders, dummy and edge rows, and an I/O-control share, over the same total number of cells.
+- **One channel row, bank groups stacked vertically, 1 KiB rows wins on area.** Each pseudo-channel's two groups sit one on each side of the TSVs, so the BG-BUS stays about 4 mm long (bus stage under 2 ns). Halving the rows per bank makes the 1 KiB-wide bank (16 MATs × 512 BL) short enough to stay fast.
+- **Matching HBM4's latency costs about 28% area.** 512-WL MATs keep tRCD/tRP at 16.6 ns; 1024-WL MATs save 3% area but add 10 ns to each.
+- **Lower latency needs very wide dies.** Placing the two groups side by side (shorter bus, smaller tCL) with BRVSA reaches 57 ns, and HBM4's coupled 2 KiB wordline reaches 55 ns and 9.8 Gb/s. Both make 30–34 mm wide dies at similar or larger area.
+- **The pin rate is DreamRAM's estimate,** set by the slower column stage relative to its HBM3 calibration. The BG-BUS stage is a pessimistic bound for long buses, which real designs retime.
 
 ## Extensions: coupled rows and paired edge subarrays
 
@@ -247,6 +249,36 @@ Other findings from the paper:
 - The 1/16 metadata + 1/8 OD-ECC cell overheads match exactly.
 
 `ioctl_h` (µm per bank group, 0 = DreamRAM) is a new extension in both the port and `tools/export_floorplan.py`. It overrides `Hbm.od_ecc_height`. For example, `ioctl_h=100` gives a 12.16 mm die and 64.9 ns latency on the HBM3 baseline; the port matches DreamRAM exactly.
+
+**BG-BUS-limited tCCD_L** (`tccd_bgbus` = 1)
+
+**What it changes.** DreamRAM sets the core column cycle, and with it tCCD_L/S, the pin rate and bandwidth, from one pipeline stage only: the in-bank CSL + MDL path (`Hbm.core_tck`). The bank group's shared BG-BUS only affects tCL and energy. But tCCD_L is the occupancy window of that shared path: a new access can start every tCCD_L, while each one takes about tCL to come out. Ryu et al. say it is set by "core cycle time and OD-ECC computation time".
+
+**How it works.** With this extension, the column cycle is the slower of two stages:
+- **Bank column path:** `Hbm.core_tck`, unchanged.
+- **BG-BUS window:** a repeated wire, so delay is linear in length times its pitch-dependent capacitance. It uses DreamRAM's own bus length (`wire_lengths()['bgbus+gbus']` = half the bank-area height) and BG-BUS capacitance ratio (as in tCL). It is calibrated like the bank path, `1 ns + (2 ns − 1 ns) × L·C / L_baseline`, so both stages are exactly 2 ns on the HBM3 baseline.
+
+The metrics panel shows both stage times and which one limits. The port matches the exporter to ≤ 2.5e-16. OD-ECC/DBI logic time is not scaled, because DreamRAM has nothing to scale it with.
+
+**Re-evaluation** (bundled designs, extension on):
+
+| Design | Bank stage | BG-BUS stage (bus length) | Pin rate | Bandwidth | Power |
+| --- | --- | --- | --- | --- | --- |
+| HBM3 baseline | 2.00 ns | 2.00 ns (5.2 mm) | 8.00 → 8.00 Gb/s | 1,024 → 1,024 GB/s | 36 → 36 W |
+| HBM4 1 SID, 1 KiB rows | 2.67 | 2.71 (7.5 mm) | 6.00 → 5.90 | 1,535 → 1,510 | 41 → 41 |
+| HBM4 1 SID, coupled | 1.93 | 2.01 (4.3 mm) | 8.27 → 7.96 | 2,117 → 2,039 | 53 → 51 |
+| Samsung org, coupled (2 rows) | 1.75 | 2.61 (6.9 mm) | 9.14 → 6.13 | 2,339 → 1,568 | 91 → 61 |
+| Samsung org, 1 KiB, banks 2 wide | 2.30 | 2.41 (5.9 mm) | 6.95 → 6.64 | 1,780 → 1,700 | 61 → 58 |
+| HBM5 · HBM4 MATs + coupled (2 rows; replaced) | 1.57 | 2.24 (5.3 mm) | 10.20 → 7.15 | 5,224 → 3,661 | 141 → 99 |
+| HBM5 · smallest die (2 rows; replaced) | 1.74 | 2.85 (8.1 mm) | 9.20 → 5.61 | 4,708 → 2,873 | 149 → 91 |
+| HBM5 · near-smallest, 1 row (now "smallest die") | 1.74 | 1.94 (4.1 mm) | 9.20 → 8.24 | 4,708 → 4,220 | 113 → 102 |
+| HBM5 · HBM4 latency, 1 row | 1.80 | 1.98 (4.3 mm) | 8.87 → 8.07 | 4,541 → 4,130 | 97 → 88 |
+
+Takeaways:
+- **Two-row layouts lose the most.** Each channel stacks all its bank groups on one side, so its BG-BUS is long and becomes the bottleneck.
+- **The HBM5 picks change.** Re-sweeping HBM5 (2 bank groups × 8 banks, 8 K rows, ≥ 8 Gb/s) with the extension on leaves 83 of 172 designs. The two-row "smallest die" and "HBM4 MATs" designs above no longer reach 8 Gb/s; the HBM5 exploration set has been re-exported with the extension (see the HBM5 section).
+- **Fewer bank groups per column is penalised.** DreamRAM's capacitance ratio assumes wire width grows with pitch, so a BG-BUS spread wider than the baseline's (fewer bank groups per column) gets *more* capacitance. That is why the HBM4 coupled design's BG-BUS stage (2.01 ns) slightly exceeds the baseline's despite a shorter bus.
+- **This is a pessimistic bound for long buses.** Real designs retime and source-synchronise these buses (Ryu et al.'s ADL / GBUS-SEL tracking), and Samsung ships a two-row HBM4 at 3.3 TB/s.
 
 ## Drawing choices (not specified by DreamRAM)
 

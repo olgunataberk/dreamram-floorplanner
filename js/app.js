@@ -594,6 +594,7 @@
       ['DQ rate', tm ? fmt(tm.dq_rate, 2) + ' Gb/s' : '–'],
       ...(tm ? [
         ['tCCD_L / tCCD_S', `${fmt(tm.tccdl, 2)} / ${fmt(tm.tccds, 2)} ns`],
+        ['Column cycle stages', `bank ${fmt(tm.tck_bank, 2)} · BG-BUS ${fmt(tm.tck_bgbus, 2)} ns <small>${p.tccd_bgbus ? 'limited by ' + tm.limiter : (tm.tck_bgbus > tm.tck_bank ? 'BG-BUS slower, not enforced' : 'bank path sets it')}</small>`],
         ['Per bank group', `${fmt(tm.bg_rate, 1)} GB/s <small>${p.atom_size} b / tCCD_L</small>`],
         ['Per pseudo-channel', `${fmt(tm.pc_rate, 1)} GB/s <small>needs ${fmt(tm.bgs_needed, 1)} BGs, has ${tm.bgs_per_pc}</small>`
           + (tm.bgs_per_pc < tm.bgs_needed - 1e-9 ? ' <span class="warn" title="Peak bandwidth assumes bank groups alternating every tCCD_S; with fewer groups a pseudo-channel tops out at bank groups × per-group rate.">⚠</span>' : '')],
@@ -744,14 +745,15 @@
     samsung_hbm4_12h_coupled: 'Samsung HBM4 org (ISSCC 26) · 12-high, 2 channel rows · coupled rows',
     samsung_hbm4_12h_1k_2wide: 'Samsung HBM4 org (ISSCC 26) · 12-high, 2 channel rows · 1 KiB rows, banks 2 wide',
     alternative_samsung: 'Alternative Samsung · 1 SID, 2 channel rows, coupled rows, banks 2 wide',
-    hbm5_2bg_hbm4_mats: 'HBM5 · HBM4 MATs + coupled 2 KiB wordline · 15.1 × 13.9 mm',
-    hbm5_2bg_min_area: 'HBM5 · smallest die · 1 KiB rows, 1024-WL MATs, 2 channel rows · 8.6 × 22.0 mm',
-    hbm5_2bg_min_area_1row: 'HBM5 · near-smallest die, 1 channel row · 17.2 × 11.2 mm',
-    hbm5_2bg_hbm4_latency: 'HBM5 · HBM4 latency (63.6 ns) · 1 KiB rows, 512-WL MATs · 17.2 × 11.5 mm',
+    hbm5_2bg_min_area: 'HBM5 · smallest die · 1 KiB rows, 1024-WL MATs · 17.2 × 11.2 mm · 8.24 Gb/s',
+    hbm5_2bg_hbm4_latency: 'HBM5 · HBM4 latency (63.6 ns) · 1 KiB rows, 512-WL MATs · 17.2 × 11.5 mm · 8.07 Gb/s',
+    hbm5_2bg_low_latency: 'HBM5 · lowest latency (57.3 ns) · BRVSA, bank groups side by side · 34.5 × 5.8 mm · 9.12 Gb/s',
+    hbm5_2bg_hbm4_mats: 'HBM5 · HBM4 MATs + coupled 2 KiB wordline · 30.2 × 7.1 mm · 9.79 Gb/s',
   };
   exSel.innerHTML = '<option value="">Example designs…</option>'
     + '<optgroup label="DreamRAM exports">' + Object.keys(EX).filter((k) => !k.startsWith('hbm5_')).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
-    // HBM5: 16 channels/die, 4096 DQs, 2 bank groups × 8 banks, half the rows per channel of our HBM4 (README)
+    // HBM5: 16 channels/die, 4096 DQs, 2 bank groups × 8 banks, half the rows per channel of our HBM4,
+    // evaluated with the BG-BUS-limited tCCD_L extension (README)
     + '<optgroup label="HBM5 exploration">' + Object.keys(exLabels).filter((k) => k.startsWith('hbm5_') && EX[k]).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
     + '<optgroup label="Presets (in-browser model)">' + Object.entries(DR.DESIGN_PRESETS).map(([k, d]) => `<option value="pre:${k}">${d.label}</option>`).join('') + '</optgroup>';
   exSel.onchange = () => {

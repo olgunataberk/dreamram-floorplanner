@@ -27,6 +27,10 @@ Two extensions that are not part of DreamRAM can also be --set (both default to 
                    the top/bottom edge pair forms one row, replacing DreamRAM's two dummy half-subarrays.
   ioctl_h=UM       height (um) of each bank group's I/O control block (DreamRAM's per-group OD-ECC
                    height, 1% of the baseline bank, when 0).
+  tccd_bgbus=1     make the core column cycle (and so tCCD_L/S, pin rate and bandwidth) the slower of the
+                   bank column path (DreamRAM's core_tck) and the bank group's shared BG-BUS window, both
+                   calibrated to the baseline's tCK. The BG-BUS stage scales with DreamRAM's own bus length
+                   (wire_lengths 'bgbus+gbus') and pitch-dependent capacitance, like its tCL.
   channel_rows=2   place the die's channels in two rows, half above and half below the TSV region,
                    each channel holding all of its bank groups on its side (Samsung ISSCC 2026 HBM4
                    core die). DreamRAM's own template (1) splits every channel across both sides.
@@ -42,7 +46,7 @@ PARAMS = ['sids', 'channels', 'ch_per_die', 'pch', 'horiz_bg', 'vert_bg', 'banks
           'csl_mdl_shared_layer', 'ha_layout', 'ha_double_ldls', 'subchannels', 'salp_groups',
           'salp_all', 'pages_per_bgbus_mux', 'mdl_bgbus_sd', 'bgbuses_per_gbus', 'bgbus_gbus_sd',
           'gbus_tsv_sd', 'tsv_dq_sd', 'atom_size']
-EXTENSIONS = {'coupled_rows': 1, 'coupled_lsb': 0, 'edge_pairing': 0, 'ioctl_h': 0, 'channel_rows': 1}  # coupled_lsb only labels rows
+EXTENSIONS = {'coupled_rows': 1, 'coupled_lsb': 0, 'edge_pairing': 0, 'ioctl_h': 0, 'channel_rows': 1, 'tccd_bgbus': 0}  # coupled_lsb only labels rows
 
 
 METRICS = ['capacity_gbytes', 'bw_gbytes', 'worst_latency_ns', 'metric_e_per_bit_closed',
@@ -73,7 +77,7 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
     tech = Tech(**{k: v for k, v in t.items() if k in tech_fields})
 
     Model = extended_hbm(Hbm, overrides.get('coupled_rows', 1), overrides.get('edge_pairing', 0), overrides.get('ioctl_h', 0),
-                         overrides.get('channel_rows', 1))
+                         overrides.get('channel_rows', 1), overrides.get('tccd_bgbus', 0))
 
     def make(p, ref, cls=Hbm):
         kw = dict(sids=p['sids'], channels=p['channels'], ch_per_die=p['ch_per_die'], pch=p['pch'],
@@ -106,6 +110,7 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
     p = dict(base)
     p.update({k: v for k, v in overrides.items() if k not in EXTENSIONS})
     dram = make(p, ref, Model)
+    dram._bgbus_len_ref = baseline.wire_lengths(tech)['bgbus+gbus']  # baseline BG-BUS length for tccd_bgbus
 
     # run DreamRAM's own simulate() for the metrics and its discard filters
     import dreamram
@@ -123,7 +128,7 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
     return dram, tech, p, (metrics if status == 0 else {}), status
 
 
-def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1):
+def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgbus=0):
     """Hbm subclass adding coupled rows, edge-subarray pairing and an I/O-control height override
     (identical to Hbm when all are off)."""
     import numpy as np
@@ -200,6 +205,21 @@ def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1):
                  + self.mbus_peri_height(tech))
             return x, y
 
+        def bank_stage_tck(self, tech):
+            return Hbm.core_tck(self, tech)  # DreamRAM: CSL + MDL over the bank height, LDL across a MAT
+
+        def bgbus_stage_tck(self, tech):
+            # The bank group's shared BG-BUS window: a repeated wire, so delay is linear in length times its
+            # pitch-dependent capacitance (the factors DreamRAM applies to tCL), calibrated so the baseline
+            # bank group's window equals the baseline tCK.
+            length = self.wire_lengths(tech)['bgbus+gbus']
+            c = tech.c_ratio(self.bgbus_pitch_ratio(tech), tech._c_within_layer_sparse)
+            return 1 + (self._tck - 1) * length * c / self._bgbus_len_ref
+
+        def core_tck(self, tech):
+            t = self.bank_stage_tck(tech)
+            return max(t, self.bgbus_stage_tck(tech)) if tccd_bgbus else t
+
         def od_ecc_height(self, tech):
             # each bank group's I/O control block (IOSA/WD, OD-ECC + DBI, BG-BUS drivers)
             return float(ioctl_h) if ioctl_h > 0 else super().od_ecc_height(tech)
@@ -250,6 +270,8 @@ def export(dram, tech, p, metrics, status):
             'pumps_per_atom': f(dram.pumps_per_atom()), 'dq_count': int(dram.dq_count()),
             'row_cmd_bits': int(row), 'col_cmd_bits': int(col),
             'total_area_mm2': f(dram.total_area(tech)),
+            'tck_bank_stage': f(dram.bank_stage_tck(tech)) if hasattr(dram, 'bank_stage_tck') else None,
+            'tck_bgbus_stage': f(dram.bgbus_stage_tck(tech)) if hasattr(dram, 'bgbus_stage_tck') else None,
         },
         'wire_counts': n,
         'wire_lengths': l,
