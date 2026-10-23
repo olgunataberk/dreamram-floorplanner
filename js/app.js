@@ -785,7 +785,7 @@
     g32_32banks_bankpath: '32G · bank path only · 4×2 BGs × 4 banks (32 / PC) · 17.2 × 10.8 mm · 42.2 Gb/s',
     g32_low_latency_bankpath: '32G · bank path only · lowest latency (63 ns) · 256-WL MATs, BRVSA · 17.2 × 11.9 mm · 32.6 Gb/s',
     g32_2bg_64b_bankpath: '32G · bank path only · 2 BGs × 16 banks, 64 B access, coupled ×4 · 26.5 × 10.9 mm · 33.1 Gb/s',
-    g32_2bg_staged_bank: '32G · staged, per-bank IOSA · 2 BGs × 8 banks, 64 B access, coupled ×2 · 14.3 × 14.4 mm · 32.2 Gb/s',
+    g32_2bg_staged_bank: '32G · staged, per-bank IOSA · 2 BGs × 8 banks, 64 B access, 4 TSVs / DQ · 14.3 × 10.5 mm · 32.2 Gb/s',
   };
   exSel.innerHTML = '<option value="">Example designs…</option>'
     + '<optgroup label="DreamRAM exports">' + Object.keys(EX).filter((k) => !k.startsWith('hbm5_') && !k.startsWith('g32_')).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
