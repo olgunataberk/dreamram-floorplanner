@@ -756,13 +756,14 @@
     g32_min_die_bankpath: '32G · bank path only · smallest die · 8 BGs × 2 banks, coupled · 14.3 × 11.4 mm · 42.8 Gb/s',
     g32_32banks_bankpath: '32G · bank path only · 4×2 BGs × 4 banks (32 / PC) · 17.2 × 10.8 mm · 42.2 Gb/s',
     g32_low_latency_bankpath: '32G · bank path only · lowest latency (63 ns) · 256-WL MATs, BRVSA · 17.2 × 11.9 mm · 32.6 Gb/s',
+    g32_2bg_64b_bankpath: '32G · bank path only · 2 BGs × 16 banks, 64 B access, coupled ×4 · 26.5 × 10.9 mm · 33.1 Gb/s',
   };
   exSel.innerHTML = '<option value="">Example designs…</option>'
     + '<optgroup label="DreamRAM exports">' + Object.keys(EX).filter((k) => !k.startsWith('hbm5_') && !k.startsWith('g32_')).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
     // HBM5: 16 channels/die, 4096 DQs, 2 bank groups × 8 banks, half the rows per channel of our HBM4,
     // evaluated with the BG-BUS-limited tCCD_L extension (README)
     + '<optgroup label="HBM5 exploration">' + Object.keys(exLabels).filter((k) => k.startsWith('hbm5_') && EX[k]).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
-    // 32 data DQs per pseudo-channel at >= 32 Gb/s, 16 GB, from tools/sweep_pin_rate.js (README)
+    // 32 data DQs per pseudo-channel at >= 32 Gb/s, 16 GB, from tools/sweep_pin_rate.py (README)
     + '<optgroup label="32 Gb/s exploration">' + Object.keys(exLabels).filter((k) => k.startsWith('g32_') && EX[k]).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
     + '<optgroup label="Presets (in-browser model)">' + Object.entries(DR.DESIGN_PRESETS).map(([k, d]) => `<option value="pre:${k}">${d.label}</option>`).join('') + '</optgroup>';
   exSel.onchange = () => {

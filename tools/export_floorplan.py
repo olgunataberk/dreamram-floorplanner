@@ -49,6 +49,7 @@ Two extensions that are not part of DreamRAM can also be --set (both default to 
 """
 import argparse
 import csv
+import functools
 import json
 import os
 import sys
@@ -67,12 +68,16 @@ METRICS = ['capacity_gbytes', 'bw_gbytes', 'worst_latency_ns', 'metric_e_per_bit
            'core_freq_ghz', 'dq_datarate_gbps', 'tcl', 'trcd', 'trp', 'tccdl', 'page_size_bytes']
 
 
-def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
+@functools.lru_cache(maxsize=None)
+def _context(dreamram_dir, mem_json, tech_json, max_die_mm):
+    """DreamRAM modules, scaled tech, baseline memory config and baseline references for one setup.
+    Cached so sweeps (tools/sweep_pin_rate.py) only build each design's own model."""
     sys.path.insert(0, dreamram_dir)
     os.chdir(dreamram_dir)  # DreamRAM configs reference each other by repo-relative paths
     from tech import Tech
     from hbm import Hbm
     import parse
+    import dreamram
 
     t = parse.tech(tech_json)
     data = json.load(open(mem_json))
@@ -88,6 +93,12 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
     if max_die_mm:
         t['max_die_dims_mm'] = max_die_mm  # relaxes only dreamram.simulate()'s die-size filter (status 11)
     tech = Tech(**{k: v for k, v in t.items() if k in tech_fields})
+    return Hbm, dreamram, tech, b
+
+
+def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
+    Hbm, dreamram, tech, b = _context(dreamram_dir, mem_json, tech_json, max_die_mm)
+    os.chdir(dreamram_dir)
 
     Model = extended_hbm(Hbm, overrides.get('coupled_rows', 1), overrides.get('edge_pairing', 0), overrides.get('ioctl_h', 0),
                          overrides.get('channel_rows', 1), overrides.get('tccd_bgbus', 0),
@@ -116,18 +127,22 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
     ref = {k: b[k] for k in ['_mat_rows', '_mat_cols', '_subarrays', '_ldls_mdls', '_mats', '_subchannels',
                              '_tck', '_tcl', '_channels', '_ch_per_die', '_sids', '_vert_bg',
                              '_pages_per_bgbus_mux', '_mdl_bgbus_sd', '_bgbus_gbus_sd', '_gbus_tsv_sd']}
-    baseline = make(base, dict(ref, _n_bgbus=-1, _die_y=-1))
-    _, bw, nt, ct, dt, ot = baseline.calc_stack_dims(tech)
-    ref.update(_n_bgbus=baseline.n_bgbus(), _die_y=nt + ct + dt + ot, _tcl=baseline._tcl,
-               _bank_x=baseline._bank_x_calc(tech), _bank_y=baseline._bank_y_calc(tech))
+    key = (dreamram_dir, mem_json, tech_json, max_die_mm)
+    if key not in _BASELINE_REFS:
+        baseline = make(base, dict(ref, _n_bgbus=-1, _die_y=-1))
+        _, bw, nt, ct, dt, ot = baseline.calc_stack_dims(tech)
+        _BASELINE_REFS[key] = (dict(_n_bgbus=baseline.n_bgbus(), _die_y=nt + ct + dt + ot, _tcl=baseline._tcl,
+                                    _bank_x=baseline._bank_x_calc(tech), _bank_y=baseline._bank_y_calc(tech)),
+                               baseline.wire_lengths(tech)['bgbus+gbus'])
+    ref_extra, bgbus_len_ref = _BASELINE_REFS[key]
+    ref.update(ref_extra)
 
     p = dict(base)
     p.update({k: v for k, v in overrides.items() if k not in EXTENSIONS})
     dram = make(p, ref, Model)
-    dram._bgbus_len_ref = baseline.wire_lengths(tech)['bgbus+gbus']  # baseline BG-BUS length for tccd_bgbus
+    dram._bgbus_len_ref = bgbus_len_ref  # baseline BG-BUS length for tccd_bgbus
 
     # run DreamRAM's own simulate() for the metrics and its discard filters
-    import dreamram
     d = dict(b, **p)
     d['mdl_over_mat'] = (p['csl_mdl_over_mat'] << 1) | p['mdl_over_mat']
     # simulate()'s atom filters read the page split from d, not from the model; coupled rows split the
@@ -140,6 +155,9 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
     for k, v in EXTENSIONS.items():
         p[k] = overrides.get(k, v)
     return dram, tech, p, (metrics if status == 0 else {}), status
+
+
+_BASELINE_REFS = {}
 
 
 def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgbus=0,

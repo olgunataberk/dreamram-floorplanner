@@ -314,7 +314,11 @@ The panel also lists the per-pseudo-channel datapath as wires × Gb/s per wire a
 
 ## 32 Gb/s exploration: 32 data DQs per pseudo-channel
 
-`node tools/sweep_pin_rate.js [--rate 32] [--max-die-mm 20] [--csv out.csv]` asks which bank organisations reach a target pin rate. It uses the port.
+```bash
+python3 tools/sweep_pin_rate.py --dreamram /path/to/DreamRAM [--rate 32] [--max-die-mm 20] [--csv out.csv]
+```
+
+This asks which bank organisations reach a target pin rate. Every design is evaluated by DreamRAM itself, through `tools/export_floorplan.py` and its extensions, so it needs only Python and a DreamRAM checkout; the default sweep takes about 6 s. Options widen the search: `--bank-groups` (vertical × side-by-side pairs, e.g. `2x1,1x2`), `--banks`, `--mats`, `--ldls`, `--atoms` (column access size in bits) and `--models` (column-cycle models to run).
 
 **Fixed:**
 - HBM4 34/36 nm array, 1 SID, 32 channels on 4 dies, 2 pseudo-channels;
@@ -354,7 +358,7 @@ Takeaways:
 
 **Bundled designs** (**Example designs → 32 Gb/s exploration**)
 
-Five passing designs, exported with DreamRAM:
+Five passing designs from the default sweep, exported with DreamRAM (a sixth, with only 2 bank groups and 64 B accesses, is described under "Only 2 bank groups per pseudo-channel?" below and exported with a 27 mm die limit):
 - Each has 16 GB, 2,176 DQs (34 per pseudo-channel), GBUS→TSV 1 and all bank groups alternating onto the GBUS.
 - Each was exported with the die limit relaxed to 19.5 mm.
 - "DreamRAM tCCD_L" keeps the 1 ns fixed share and enforces the BG-BUS window (`tccd_bgbus` = 1). "Bank path only" uses a 0.5 ns node-scaled fixed share and `tccd_bgbus` = 0.
@@ -373,6 +377,28 @@ Five passing designs, exported with DreamRAM:
 | Per PC: BG-BUS · GBUS = TSV · DQ (wires × Gb/s) | 272 × 0.29 · 272 × 4.58 · 34 × 36.7 | 272 × 0.29 · 272 × 4.72 · 34 × 37.8 | 272 × 0.67 · 272 × 5.35 · 34 × 42.8 | 272 × 0.66 · 272 × 5.27 · 34 × 42.2 | 136 × 0.51 · 136 × 8.16 · 34 × 32.6 |
 
 For comparison, the HBM4 coupled design draws 51 W at 2 TB/s with the BG-BUS extension, at 3.12 / 1.79 pJ/b. So 4–5× the bandwidth costs more energy per bit as well as more power, and a 32 Gb/s stack would draw about 200–380 W in DreamRAM's worst case. Latency grows because these designs stack more bank groups per column and use taller 1024-WL MATs. Only the 256-WL BRVSA design keeps HBM4's 63 ns.
+
+**Only 2 bank groups per pseudo-channel?**
+
+```bash
+python3 tools/sweep_pin_rate.py --dreamram /path/to/DreamRAM --bank-groups 2x1,1x2 --banks 2,4,8,16 \
+    --mats 16,32,64 --ldls 8,16,32,64 --atoms 256,512,1024 --max-die-mm 40
+```
+
+With two groups alternating, the pin rate is `access bits × 2 / (32 DQs × tCCD_L)`. At HBM4's 256-bit (32 B) access, 32 Gb/s needs tCCD_L ≤ 0.5 ns, and no 16 GB bank gets below about 0.9 ns in any model. Highest pin rate with 2 bank groups:
+
+| Column-cycle model | 32 B access | 64 B access | 128 B access |
+| --- | --- | --- | --- |
+| DreamRAM (1 ns fixed, C × L) | 9.3 Gb/s | 19.5 | 19.5 |
+| 0.5 ns fixed, node-scaled, C × L | 10.7 | 23.5 | 23.5 |
+| 0.5 ns fixed, node-scaled, L² | 10.9 | 23.5 | 23.5 |
+| No fixed time, C × L | 11.0 | 25.1 | 25.1 |
+| 0.5 ns fixed, node-scaled, bank path only | 17.7 | **34.4** | **34.4** |
+
+- **With the BG-BUS window enforced, 2 groups top out at 19–25 Gb/s.** A 64 B access halves the number of accesses per pin bit, but the shared bus then limits tCCD_L to 1.3–1.6 ns.
+- **128 B accesses gain nothing.** DreamRAM's MDL-pitch filter keeps any 1 KiB-row MAT set below 512 bits per pump, so a 128 B access takes two pumps and doubles tCCD_L.
+- **Only the bank-path-only model reaches 32 Gb/s,** and only with 64 B accesses: 9 designs, all 2 vertical groups × 16 banks (32 banks per pseudo-channel, twice HBM4's) with a 4 KiB wordline of four coupled 1 KiB rows and 512 bits per pump. The smallest is bundled as **32G · bank path only · 2 BGs × 16 banks, 64 B access**: tCCD_L 0.97 ns, 33.1 Gb/s (8.5 TB/s), 26.48 × 10.94 mm = 289.7 mm² (+67% vs. HBM4 coupled), 70.3 ns row-miss latency, 192 W. Its BG-BUS stage is 1.75 ns, so enforcing that window caps it at about 18 Gb/s.
+- **TSVs dominate its extra area.** With GBUS→TSV 1:1 its 544 GBUS bits per pseudo-channel each need a TSV (39,680 data TSVs per die, 81 mm²). Serialising 4:1 onto the TSVs (136 TSVs per pseudo-channel at 8.3 Gb/s) brings the die to 233.7 mm² at the same pin rate.
 
 ## Drawing choices (not specified by DreamRAM)
 
@@ -404,5 +430,5 @@ js/examples.js     bundled DreamRAM exports (generated)
 tools/export_floorplan.py   export a design's geometry + metrics from DreamRAM
 tools/build_examples.py     bundle examples/*.json into js/examples.js
 tools/serve.py              no-cache local server
-tools/sweep_pin_rate.js     iso-capacity sweep for a target pin rate (uses the port)
+tools/sweep_pin_rate.py     iso-capacity sweep for a target pin rate (runs DreamRAM via the exporter)
 ```
