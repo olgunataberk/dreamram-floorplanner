@@ -8,7 +8,8 @@ staged column-cycle model (tccd_staged), so tCCD_L = pumps x max(bank cycle, sha
 
 Interface options ("breaks" relative to HBM4) fix what the host sees: pseudo-channels per channel (and so data DQs
 per pseudo-channel), column access size, bank groups and banks per pseudo-channel. Everything else is swept: MAT
-size and count, MDLs per MAT, CSL/MDL routing, BLSA/BRVSA, coupled rows and the bank-group layout. The GBUS->TSV
+size and count, MDLs per MAT, CSL/MDL routing, BLSA/BRVSA, coupled rows, the bank-group layout and whether the die's
+channels sit in one row (DreamRAM) or two (channel_rows, as in Samsung's ISSCC 2026 HBM4). The GBUS->TSV
 serdes is chosen per design as the fewest TSVs that keep every TSV at or below --tsv-rate.
 
 Rate model (DreamRAM leaves the interleaving between bank groups open; tCCD_S is tCCD_L / 2 there):
@@ -19,6 +20,9 @@ Reported alongside, not used as filters:
   CK = pin rate / 4 (HBM4), column-command bus use = PCs per channel / (tB in CK cycles), one CK per command
   GBUS sets: each set holds one access for k x tB; Ryu et al. (HBM3, 16 nm) found a 1 ns GBUS window too short and
   used two sets for 2 ns, so the minimum window is taken as 1-2 ns at 16 nm, scaled by FO4 (f / 16 nm)^0.9.
+Package friendliness: the die aspect ratio (long side / short side; the JEDEC HBM4 footprint is 14.175 x 10.975 mm,
+1.29). Besides the smallest passing die, each run reports the squarest passing die within --area-slack of it, and
+--max-aspect drops designs above a given ratio.
 
 Usage:
   python3 tools/sweep_interface.py --dreamram /path/to/DreamRAM [--rates 8,16,24,32] [--options hbm4,a64,...]
@@ -37,7 +41,7 @@ import export_floorplan as E  # noqa: E402
 import sweep_pin_rate as SW  # noqa: E402
 
 GB, PAGE_BITS, CHANNELS, DQ_CH = 16, 8192, 32, 64  # DQ_CH: data DQs per channel (HBM4: 2 PCs x 32)
-FIXED = dict(sids=1, channels=CHANNELS, ch_per_die=8, channel_rows=1, salp_groups=1, tccd_bgbus=1, bw_bg_cap=1,
+FIXED = dict(sids=1, channels=CHANNELS, ch_per_die=8, salp_groups=1, tccd_bgbus=1, bw_bg_cap=1,
              tsv_chain=1, mdl_bgbus_sd=1, bgbus_gbus_sd=1, tccd_staged=1)
 MODELS = {
     'staged_bank': ('per-bank IOSA', dict(mdl_share=0)),
@@ -58,9 +62,9 @@ OPTIONS = {
 
 
 def internal_designs(pch, bgs, banks_pc, access):
-    for (v, h), bpc, mats, mat_cols, mat_rows, ldls, mdlcsl, shared, brvsa, coupled in itertools.product(
+    for (v, h), bpc, mats, mat_cols, mat_rows, ldls, mdlcsl, shared, brvsa, coupled, rows in itertools.product(
             LAYOUTS[bgs], banks_pc, [16, 32, 64], [256, 512, 1024], [256, 512, 1024], [8, 16, 32, 64], [0, 1, 3],
-            [0, 1], [0, 1], [1, 2, 4]):
+            [0, 1], [0, 1], [1, 2, 4], [1, 2]):
         if mats * mat_cols != PAGE_BITS * coupled or bpc % bgs:
             continue
         if mats * ldls / coupled > access:  # one column cycle may not deliver more than the access (DreamRAM status 6)
@@ -71,7 +75,7 @@ def internal_designs(pch, bgs, banks_pc, access):
             continue
         yield dict(vert_bg=v, horiz_bg=h, banks=banks, mats=mats, mat_cols=mat_cols, mat_rows=mat_rows, ldls_mdls=ldls,
                    mdlcsl=mdlcsl, csl_mdl_shared_layer=shared, brvsa=brvsa, coupled_rows=coupled, subarrays=int(sub),
-                   pages_per_bgbus_mux=coupled, atom_size=access)
+                   pages_per_bgbus_mux=coupled, atom_size=access, channel_rows=rows)
 
 
 def tsv_split(gbus_bits, dq_pc, rate, tsv_max):
@@ -118,7 +122,7 @@ def evaluate(a, opt, d, model, rate):
                 gbus_sd=sd, tsvs_pc=int(gbus_bits / sd), tsv_rate=dq_pc * rate / (gbus_bits / sd),
                 gbus_sets=f'{math.ceil(1.0 * fo4 / tb - 1e-9)}-{math.ceil(2.0 * fo4 / tb - 1e-9)}',
                 ck_ghz=rate / 4, ca_use=pch / (tb * rate / 4),
-                die_w=die_w / 1000, die_h=die_h / 1000, die=die_w * die_h / 1e6, tsv_mm2=die_w * (cmd_y + data_y + other_y) / 1e6,
+                die_w=die_w / 1000, die_h=die_h / 1000, die=die_w * die_h / 1e6, aspect=max(die_w, die_h) / min(die_w, die_h), tsv_mm2=die_w * (cmd_y + data_y + other_y) / 1e6,
                 latency=m['worst_latency_ns'], e_closed=e_closed, power=e_closed * 1e-12 * DQ_CH * CHANNELS * rate * 1e9)
 
 
@@ -126,7 +130,8 @@ def org(r):
     return (f"{r['vert_bg']}x{r['horiz_bg']} BG x {r['banks']} banks, {r['subarrays']} SA x {r['mat_rows']} WL, "
             f"{r['mats']} x {r['mat_cols']}-BL MATs, {r['ldls_mdls']} MDL, rt {r['mdlcsl']}"
             f"{'' if r['csl_mdl_shared_layer'] else '/2L'}{', BRVSA' if r['brvsa'] else ''}"
-            f"{', coupled x%d' % r['coupled_rows'] if r['coupled_rows'] > 1 else ''}")
+            f"{', coupled x%d' % r['coupled_rows'] if r['coupled_rows'] > 1 else ''}"
+            f"{', 2 channel rows' if r['channel_rows'] == 2 else ''}")
 
 
 def main():
@@ -137,13 +142,16 @@ def main():
     ap.add_argument('--models', default=','.join(MODELS))
     ap.add_argument('--tsv-rate', type=float, default=8, help='max Gb/s per data TSV')
     ap.add_argument('--max-die-mm', type=float, default=20, help='DreamRAM die-size filter')
+    ap.add_argument('--max-aspect', type=float, help='drop dies whose long / short side exceeds this')
+    ap.add_argument('--area-slack', type=float, default=0.10, help='squarest pick: allowed area above the smallest')
     ap.add_argument('--csv', help='write every passing design to this CSV')
     a = ap.parse_args()
     a.dreamram = os.path.abspath(a.dreamram)
     rates = [float(x) for x in a.rates.split(',')]
     f = lambda v, n=2: f'{v:.{n}f}'  # noqa: E731
     rows = []
-    print(f'16 GB, 2048 data DQs, 1 KiB host row, TSVs <= {f(a.tsv_rate, 0)} Gb/s each, die limit {f(a.max_die_mm, 0)} mm\n')
+    print(f'16 GB, 2048 data DQs, 1 KiB host row, TSVs <= {f(a.tsv_rate, 0)} Gb/s each, die limit {f(a.max_die_mm, 0)} mm'
+          + (f', aspect <= {f(a.max_aspect)}' if a.max_aspect else '') + '\n')
     for opt in a.options.split(','):
         pch, access, bgs, banks_pc, label = OPTIONS[opt]
         cands = list(internal_designs(pch, bgs, banks_pc, access))
@@ -151,18 +159,20 @@ def main():
         for model in a.models.split(','):
             for rate in rates:
                 res = [r for r in (evaluate(a, opt, d, model, rate) for d in cands) if r]
-                ok = sorted((r for r in res if r['rmax'] >= rate - 1e-9), key=lambda r: r['die'])
+                ok = sorted((r for r in res if r['rmax'] >= rate - 1e-9 and (not a.max_aspect or r['aspect'] <= a.max_aspect)),
+                            key=lambda r: r['die'])
                 best = max(res, key=lambda r: r['rmax']) if res else None
                 line = f"  {MODELS[model][0]:48s} {f(rate, 0):>3} Gb/s: {len(ok):4d} pass"
                 if best:
                     line += f" (fastest {f(best['rmax'], 1)} Gb/s, {best['limiter']})"
                 if ok:
-                    r = ok[0]
-                    line += (f"\n      smallest: {org(r)}\n      tCCD_L {f(r['tccdl'])} ns (needs <= {f(r['tccdl_need'])}), "
-                             f"die {f(r['die_w'])} x {f(r['die_h'])} = {f(r['die'], 1)} mm², TSVs/PC {r['tsvs_pc']} x "
-                             f"{f(r['tsv_rate'], 1)} Gb/s (TSV {f(r['tsv_mm2'], 1)} mm²), latency {f(r['latency'], 1)} ns, "
-                             f"{f(r['e_closed'])} pJ/b -> {f(r['power'], 0)} W, CK {f(r['ck_ghz'], 0)} GHz, "
-                             f"CA {f(100 * r['ca_use'], 0)}%, GBUS sets {r['gbus_sets']}")
+                    sq = min((r for r in ok if r['die'] <= ok[0]['die'] * (1 + a.area_slack)), key=lambda r: (r['aspect'], r['die']))
+                    for tag, r in (('smallest', ok[0]), ('squarest', sq)) if sq is not ok[0] else (('smallest, squarest', ok[0]),):
+                        line += (f"\n      {tag}: {org(r)}\n      tCCD_L {f(r['tccdl'])} ns (needs <= {f(r['tccdl_need'])}), "
+                                 f"die {f(r['die_w'])} x {f(r['die_h'])} = {f(r['die'], 1)} mm² (aspect {f(r['aspect'])}), "
+                                 f"TSVs/PC {r['tsvs_pc']} x {f(r['tsv_rate'], 1)} Gb/s (TSV {f(r['tsv_mm2'], 1)} mm²), "
+                                 f"latency {f(r['latency'], 1)} ns, {f(r['e_closed'])} pJ/b -> {f(r['power'], 0)} W, "
+                                 f"CK {f(r['ck_ghz'], 0)} GHz, CA {f(100 * r['ca_use'], 0)}%, GBUS sets {r['gbus_sets']}")
                 print(line)
                 rows += ok
         print()

@@ -579,13 +579,13 @@ Reported but not used to filter:
 
 | Pin rate | Per-bank IOSA | Per-bank, mid-bank decoder | IOSA at the I/O control |
 | --- | --- | --- | --- |
-| 8 Gb/s | 129.1 mm², tCCD_L 1.88 / 2.00 ns | 125.6 mm² | none (fastest 6.1 Gb/s) |
+| 8 Gb/s | 129.1 mm², tCCD_L 1.88 / 2.00 ns | 125.6 mm² | none with one channel row (fastest 6.1 Gb/s); 152.8 mm² with two |
 | 16 Gb/s | 134.7 mm², 0.94 / 1.00 ns | 133.8 mm², 0.84 / 1.00 ns | none |
 | 20–32 Gb/s | none (fastest 18.6) | none (fastest 19.0, OD-ECC + DBI) | none |
 
 - **16 Gb/s works on the HBM4 interface, but only with an IOSA in every bank.** It costs about 4% more die than 8 Gb/s (more TSVs). It needs a 4 GHz CK and 2–4 GBUS sets instead of 1–2. tCCD_L margin is 6% (16% with mid-bank decoders).
 - **Above about 19 Gb/s the HBM4 interface runs out.** OD-ECC + DBI alone takes 0.84 ns of the 0.5 ns that 32 Gb/s allows per group. Even with ECC pipelined, the bank cycle caps it near 26–29 Gb/s.
-- **The shared-IOSA model can't hold even 8 Gb/s with 2 groups × 8 banks (6.1 Gb/s).** That matches JEDEC's tCCD_L of 2.5 ns for this organisation, which sustains 6.4 Gb/s with two groups taking turns.
+- **With one channel row, the shared-IOSA model can't hold even 8 Gb/s with 2 groups × 8 banks (6.1 Gb/s).** Two channel rows let short, wide banks (4 KiB wordlines) fit under the 20 mm die limit, and those reach 10.6 Gb/s (see below). The one-row figure matches JEDEC's tCCD_L of 2.5 ns for this organisation, which sustains 6.4 Gb/s with two groups taking turns.
 
 **At 32 Gb/s, breaking the interface (smallest die per option):**
 
@@ -602,6 +602,12 @@ Reported but not used to filter:
 - **To keep 32 B accesses, split each channel into 4 pseudo-channels of 16 DQs with 4 groups each.** That keeps 32 banks per channel, as in HBM4, and passes under every IOSA model. The cost is a 100%-busy command bus at 8 GHz CK.
 - **More groups at 32 B on 32 DQs works on paper but is costly.** It needs a 0.25 ns burst, 4–7 GBUS sets and an 8 GHz command bus at 100%. 8 groups adds 2× latency and power.
 - **64 B accesses halve the command-bus load.** That's the main interface argument for them beyond bank timing.
+
+**Package friendliness.** The sweep also places a die's channels in one row (DreamRAM) or two (`channel_rows`, as in Samsung's HBM4). It reports each die's aspect ratio (long side / short side; the JEDEC HBM4 footprint is 1.29), the squarest passing die within `--area-slack` (10%) of the smallest, and drops dies above `--max-aspect`. The smallest passing dies are long and thin, up to 2.8 : 1. Picking the channel and bank-group arrangement for shape costs about 10–20% area. At 32 Gb/s with aspect ≤ 1.3, the designs that pass under every IOSA placement are:
+- 4 PCs × 16 DQ with 4 groups: 158.0 mm², 14.30 × 11.05 mm, 85 ns;
+- 64 B with 4 groups: 160.5 mm², 14.30 × 11.22 mm, 142 ns.
+
+On the HBM4 interface, two channel rows also let the shared-IOSA model pass 8 Gb/s (152.8 mm², 1.15 : 1; 16 Gb/s still fails). That run takes about 40 s for 8, 16 and 32 Gb/s.
 
 Same caveats as above apply: the 24-gate-delay ECC prior, the calibration, the uncosted GBUS sets and per-bank IOSAs, and power. The power column is worst-case closed-row. None of these dies fits HBM4's 14.2 × 11.0 mm footprint; DreamRAM's HBM4 reference doesn't either.
 
