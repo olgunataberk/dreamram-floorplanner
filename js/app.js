@@ -552,14 +552,18 @@
       rows.push(['WL × BL', `${p.mat_rows} × ${p.mat_cols}`], ['Capacity', `${p.mat_rows * p.mat_cols / 1024} Kib`], ['Row page', n.col.page], ['Subchannel', n.col.sc], ['MDLs', `${p.ldls_mdls} pairs`], ['CSLs', fmt(m.pitch.csl_count, 0)], ['Routing', { 0: 'MDL/SWD · CSL/MAT', 1: 'DLOMAT', 3: p.csl_mdl_shared_layer ? 'MDL+CSL/MAT, shared' : 'MDL+CSL/MAT, 2 layers' }[p.mdlcsl]], ['Cell eff. (MAT)', fmt(100 * (b.mat_w * b.mat_h) / ((b.mat_w + b.swd_w) * (b.mat_h + b.blsa_h)), 1) + ' %']); break;
       case 'eccmat': rows.push(['Kind', n.col.ecc], ['Bits / row', fmt(n.col.w / (m.t.pitch_bl * m.t.iso_cols), 0)], ['OD-ECC', eccWhere(n.col)]); break;
       case 'blsa': rows.push(['Height', DR.fmtLen(b.blsa_h)], ['Sense amp', p.brvsa ? 'BRVSA / OCSA' : 'BLSA']); break;
-      case 'rhcells': rows.push(['Width', DR.fmtLen(b.rh_w)], ['Counters / row', `${m.pages.ind_row_pages} × ${p.prac_bits} b`],
+      case 'rhcells': rows.push(b.cnt_h ? ['Counter subarray', `${b.counter_rows} rows, ${DR.fmtLen(b.cnt_h)} incl. its BLSA stripe`] : ['Width', DR.fmtLen(b.rh_w)],
+        ['Counters / row', `${m.pages.ind_row_pages} × ${p.prac_bits} b${m.timing && m.timing.circuits.prac && m.timing.circuits.prac.cells > p.prac_bits ? ` + ${m.timing.circuits.prac.cells - p.prac_bits} check` : ''}`],
         ['Update per ACT', m.timing ? `read + 1 + write, ${fmt(m.timing.acu, 2)} ns after PRE` : '—']); break;
       case 'swd': {
         rows.push(['Width', DR.fmtLen(b.swd_w)], ['Stripes / row', b.swd_count]);
         // a driver fault hits the local wordline in both neighbouring MATs (Ryu et al., Fig. 5b)
         // PRAC counter cells carry no OD-ECC symbols, so a fault next to them only counts the MAT on the other side
         const [l, r] = (n.between || []).map((c) => (c && c.kind === 'rhcells' ? null : c));
-        if (l && r && n.sa.row.kind === 'subarray') {
+        if (l && r && n.sa.row.kind === 'subarray' && ecc.structural) {
+          rows.push(['Driver fault hits', `${name(l)} + ${name(r)} = ${2 * p.ldls_mdls} b → ${ecc.swdSymPerCw} symbol(s) per codeword`],
+            ['OD-ECC', `${ecc.ncw} × RS(${ecc.n},${ecc.k}) over ${ecc.sym}-bit symbols corrects ${ecc.tCorr} → ${ecc.correctable ? 'correctable' : 'not correctable'}`]);
+        } else if (l && r && n.sa.row.kind === 'subarray') {
           const name = (c) => (c.kind === 'mat' ? 'MAT ' + c.idx : 'ECC ' + c.idx);
           const sym = (c) => Array.from({ length: Math.max(1, Math.round(ecc.spm)) }, (_, k) => DR.codeword(ecc.spm, c.acc, k));
           // MATs read by different column accesses (subchannels, half pages, coupled rows) are decoded apart
@@ -601,7 +605,10 @@
       ...(tm && m.p.prac ? (() => {
         // the same design without PRAC, for the cost of counting
         const off = DR.compute(Object.assign({}, m.p, { prac: 0 }), app.techKey).timing;
-        return [['PRAC counter update', `${fmt(tm.acu, 2)} ns <small>${fmt(DR.PRAC.acu_cycles, 1)} column cycles, after PRE</small>`],
+        const how = tm.prac_parts
+          ? `restore ${fmt(tm.prac_parts.restore, 1)}${tm.prac_parts.queue ? ` + queue ${fmt(tm.prac_parts.queue, 1)}` : ''} + path ${fmt(tm.acu - tm.prac_parts.restore - tm.prac_parts.queue, 1)}, ${tm.prac_after_pre ? 'after PRE' : 'before PRE'}`
+          : `${fmt(DR.PRAC.acu_cycles, 1)} column cycles, after PRE`;
+        return [['PRAC counter update', `${fmt(tm.acu, 2)} ns <small>${how}</small>`],
           ['PRAC cost', `tRP +${fmt(tm.trp - off.trp, 1)}, tRAS ${fmt(tm.tras - off.tras, 1)}, tRC +${fmt(tm.trc - off.trc, 1)} ns <small>latency +${fmt(100 * (tm.latency / off.latency - 1), 0)}%</small>`]];
       })() : []),
       ['DQ rate', tm ? fmt(tm.dq_rate, 2) + ' Gb/s' : '–'],
@@ -630,7 +637,9 @@
       ['Row page', `${m.pages.page_bits / 8} B <small>× ${m.pages.ind_row_pages} indep.</small>`],
       ...(p.coupled_rows > 1 ? [['Physical wordline', `${m.pages.phys_row_bits / 8 / m.pages.ind_row_pages} B <small>= ${p.coupled_rows} coupled rows</small>`]] : []),
       ['Pumps / atom', fmt(m.pumps, 0)],
-      ['OD-ECC', (() => { const e = DR.eccLayout(m); return `2 × RS(${fmt(e.n, 1)},${fmt(e.k, 1)}) <small>sub-WL fault ${e.correctable ? '✓' : '✗'}</small>`; })()],
+      ['OD-ECC', (() => { const e = DR.eccLayout(m); return `${e.ncw || 2} × RS(${fmt(e.n, 1)},${fmt(e.k, 1)})${e.structural ? ` /${e.sym} b` : ''} <small>sub-WL fault ${e.correctable ? '✓' : '✗'}</small>`; })()],
+      ...(tm && m.p.odecc_model ? [['OD-ECC engine', `${fmt(tm.circuits.ecc.levels, 0)} levels · ${fmt(tm.circuits.eccFo4, 1)} FO4 / stage · ${fmt(tm.circuits.ecc.gates / 1000, 1)}k gates${m.p.odecc_where === 1 ? ' per bank' : ''}`]] : []),
+      ...(m.p.odecc_model || (m.p.prac && m.p.prac_model) ? [['I/O control', `${fmt(s.od_ecc_h, 1)} µm <small>${fmt(tm ? tm.circuits.gatesBg / 1000 : 0, 1)}k gates per bank group</small>`]] : []),
       ['DQs', m.wires.dq_count],
       ['Bank', `${fmt(m.bank.bank_x, 0)} × ${fmt(m.bank.bank_y, 0)} µm`],
     );

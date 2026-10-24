@@ -330,8 +330,9 @@
         R(F(0, 0, b.bank_x, d2), P.dummy, 'dummy');
         R(F(0, d2 + b.bank_y, b.bank_x, d2), P.dummy, 'dummy');
         R(F(b.rowdec_w, d2, b.cells_w + b.swd_total + b.rh_w, arrH), P.mat, 'mat');
-        R(F(0, d2, b.rowdec_w, arrH), P.rowdec, 'rowdec');
-        R(F(0, d2 + arrH, b.bank_x, b.coldec_h), P.coldec, 'coldec');
+        R(F(0, d2, b.rowdec_w, arrH + b.cnt_h), P.rowdec, 'rowdec');
+        if (b.cnt_h) R(F(b.rowdec_w, d2 + arrH, b.bank_x - b.rowdec_w, b.cnt_h), P.rhcells, 'rhcells');
+        R(F(0, d2 + arrH + b.cnt_h, b.bank_x, b.coldec_h), P.coldec, 'coldec');
         R(F(b.rowdec_w + b.data_w + b.swd_w * (m.p.mats + m.p.subchannels), d2, b.ecc_w + b.swd_w * b.ecc_mats, arrH), P.eccmat, 'eccmat');
         if (b.rh_w) R(F(b.bank_x - b.swd_w - b.rh_w, d2, b.rh_w, arrH), P.rhcells, 'rhcells');
         if (this.layerOn('blsa') && sh > 26) {

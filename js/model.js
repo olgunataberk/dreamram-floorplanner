@@ -83,6 +83,8 @@
     // extensions beyond DreamRAM (tools/export_floorplan.py implements the same in an Hbm subclass)
     coupled_rows: 1, coupled_lsb: 0, edge_pairing: 0, ioctl_h: 0, channel_rows: 1, tccd_bgbus: 0,
     tccd_staged: 0, mdl_share: 1, col_mid: 0, od_ecc_logic: 1, prac: 0, prac_bits: 12,
+    prac_model: 0, prac_when: 0, prac_path: 0, prac_prot: 0,
+    odecc_model: 0, odecc_sym: 8, odecc_t: 1, odecc_cw: 2, odecc_where: 0, odecc_pipe: 1,
     tck_fixed: 1, tck_fixed_scale: 0, tck_wire: 1, bw_bg_cap: 0, tsv_chain: 0,
   };
 
@@ -123,8 +125,18 @@
       ['mdl_share', 'MDL / IOSA sharing (staged)', [[1, 'IOSA shared at I/O control (HBM3)'], [0, 'Per-bank IOSA at bank edge'], [2, 'One MDL line shared per side']]],
       ['col_mid', 'Column decoder (staged)', [[0, 'At bank edge (DreamRAM)'], [1, 'Mid-bank: halves CSL / MDL']]],
       ['od_ecc_logic', 'OD-ECC / DBI in tCCD_L (staged)', [[1, 'Yes (HBM3 and later)'], [0, 'No']]],
-      ['prac', 'Per-row activation counting', [[0, 'Off'], [1, 'PRAC / PRHT (DDR5 timing)']]],
-      ['prac_bits', 'PRAC counter bits per row', [[12, '12 (PRHT)'], [16, '16'], [8, '8']]],
+      ['prac', 'Per-row activation counting', [[0, 'Off'], [1, 'PRAC / PRHT']]],
+      ['prac_bits', 'PRAC counter bits per row', [[12, '12 (PRHT)'], [16, '16'], [10, '10'], [8, '8']]],
+      ['prac_model', 'PRAC counter update model', [[0, 'DDR5 ratio (4.2 column cycles)'], [1, 'Structural (circuits)']]],
+      ['prac_when', 'PRAC update runs (structural)', [[0, 'After PRE (DDR5 PRAC)'], [1, 'While row open (PRHT)'], [2, 'Counter subarray (Chronus)']]],
+      ['prac_path', 'PRAC counter path (structural)', [[0, 'Per bank'], [1, 'Shared I/O control']]],
+      ['prac_prot', 'PRAC counter protection (structural)', [[0, 'None'], [1, 'Parity'], [2, 'Own SEC-DED'], [3, 'Inside OD-ECC codeword']]],
+      ['odecc_model', 'OD-ECC engine model', [[0, 'DreamRAM (24 FO4, 1/8 cells)'], [1, 'Structural (Reed-Solomon)']]],
+      ['odecc_sym', 'OD-ECC symbol bits (structural)', [[8, '8 (HBM3)'], [16, '16 (HBM4 example)']]],
+      ['odecc_t', 'OD-ECC symbols corrected (structural)', [[1, '1'], [2, '2']]],
+      ['odecc_cw', 'OD-ECC codewords per 32 B (structural)', [[2, '2 (HBM3)'], [1, '1 (HBM4 example)'], [4, '4']]],
+      ['odecc_where', 'OD-ECC decoder (structural)', [[0, 'Per bank group (I/O control)'], [1, 'Per bank']]],
+      ['odecc_pipe', 'OD-ECC pipeline stages (structural)', [[1, '1'], [2, '2'], [3, '3']]],
       ['tccd_bgbus', 'tCCD_L from', [[0, 'Bank column path only (DreamRAM)'], [1, 'Slower of bank path and BG-BUS window']]],
       ['tck_fixed', 'Fixed column-cycle time', [[1, '1 ns (DreamRAM)'], [0.75, '0.75 ns'], [0.5, '0.5 ns'], [0.25, '0.25 ns'], [0, '0 · wire delay only']]],
       ['tck_fixed_scale', 'Fixed time vs. node', [[0, 'Constant (DreamRAM)'], [1, 'Scales with logic: (f / 16 nm)^0.9']]],
@@ -152,6 +164,62 @@
     return { rowdec_w: t._rowdec_w * s, coldec_h: t._coldec_h * s, blsa_ref: t._blsa_h * s, swd_w: t._swd_w * s, capScale: sc };
   }
 
+  // ---- Structural on-die ECC and PRAC circuits (odecc_model, prac_model; mirrors tools/export_floorplan.py) ----
+  // Gate equivalents and logic levels; one level = LEVEL_FO4, calibrated so HBM3's OD-ECC (2 × RS(19,17) over
+  // 8-bit symbols per 32 B) decodes in the staged model's 24 FO4. I/O-control height scales with gate count
+  // relative to that engine, which DreamRAM sizes at 1% of the baseline bank height.
+  DR.CIRC = { dbi_gates_byte: 25, dbi_levels: 7, reg_fo4: 2, inc_gates_bit: 21 / 8, ff_gates: 6, sa_gates: 20, row_addr_bits: 17 };
+  const lg = (x) => (x > 1 ? Math.max(0, ceil(log2(x))) : 0);
+  function eccCircuit(sym, tc, cw32, mdProp, atom = 256) {
+    const C = DR.CIRC, ncw = cw32 * atom / 256;
+    const kb = 256 * (1 + mdProp) / cw32, k = ceil(kb / sym), n = k + 2 * tc, rb = 2 * tc * sym, nb = k * sym + rb;
+    const syn = rb * (nb / 2 - 1), enc = rb * (k * sym / 2 - 1);
+    const cnst = sym * (sym / 2 - 1), mul = 2 * sym * sym;
+    const lvConst = lg(sym / 2), lvMul = 2 + lg(sym), lvCmp = 1 + lg(sym), lvInv = (lg(sym) + 1) * lvMul;
+    let loc, lvLoc;
+    if (tc === 1) { loc = n * (cnst + 2 * sym); lvLoc = lvConst + lvCmp; }
+    else {
+      loc = 6 * mul + (lg(sym) + 1) * mul + n * (2 * cnst + 3 * sym) + n * mul;
+      lvLoc = (2 * lvMul + lvInv) + (lvConst + 1 + lvCmp) + lvMul;
+    }
+    const corr = 2 * k * sym, dec_levels = lg(nb / 2) + lvLoc + 2;
+    return { ncw, n, k, nb, check_prop: cw32 * rb / 256, gates: ncw * (syn + enc + loc + corr) + atom / 8 * C.dbi_gates_byte,
+      dec_levels, enc_levels: lg(k * sym / 2), levels: Math.max(dec_levels, C.dbi_levels) };
+  }
+  DR.eccCircuit = eccCircuit;
+  const ECC_REF = eccCircuit(8, 1, 2, 1 / 16);
+  const LEVEL_FO4 = 24 / ECC_REF.levels; // DR.STAGED.ecc / HBM3 levels
+  const eccStageFo4 = (e, pipe) => e.levels * LEVEL_FO4 / pipe + (pipe > 1 ? DR.CIRC.reg_fo4 : 0);
+  function pracCircuit(bits, prot, ecc) {
+    const C = DR.CIRC;
+    let extra = 0, encL = 0, decL = 0, code = 0;
+    if (prot === 1) { extra = 1; encL = lg(bits + 1); decL = lg(bits + 1); code = bits; }
+    else if (prot === 2) {
+      let r = 1;
+      while (pow(2, r) < bits + r + 1) r++;
+      r += 1; // + overall parity for double-error detection
+      extra = r; encL = lg(bits / 2); decL = lg(bits / 2) + lg(r) + 1; code = 2 * r * bits / 2 + bits * (r + 1);
+    } else if (prot === 3) { encL = ecc.enc_levels; decL = ecc.dec_levels; }
+    const width = prot !== 3 ? bits + extra : ecc.nb;
+    const gates = C.inc_gates_bit * bits + 2 * bits + C.ff_gates * (bits + 3 * C.row_addr_bits) + C.sa_gates * width + code;
+    return { cells: bits + extra, width, gates, inc_levels: lg(bits) + 1, enc_levels: encL, dec_levels: decL };
+  }
+  // Per-design circuit view used by geometry and timing
+  function circuits(p, t) {
+    const ecc = p.odecc_model ? eccCircuit(p.odecc_sym, p.odecc_t, p.odecc_cw, t.md_ecc, p.atom_size) : null;
+    const prac = p.prac && p.prac_model ? pracCircuit(p.prac_bits, p.prac_prot, ecc || eccCircuit(8, 1, 2, t.md_ecc, p.atom_size)) : null;
+    const cells = p.prac ? (p.prac_model ? prac.cells : p.prac_bits) : 0;
+    const segs = pow(2, p.ha_layout) * p.subchannels; // Hbm.ind_row_pages
+    const counterRows = ceil(p.subarrays * p.mat_rows * segs * cells / (p.mats * p.mat_cols));
+    // the update runs over the bank group's I/O control when asked to, or when the counter sits inside an OD-ECC
+    // codeword whose only decoder is the bank group's
+    const sharedPath = p.prac_path === 1 || (p.prac_prot === 3 && !(p.odecc_model && p.odecc_where === 1));
+    let gatesBg = (ecc || ECC_REF).gates * (p.odecc_model && p.odecc_where === 1 ? p.banks : 1);
+    if (prac) gatesBg += prac.gates * (sharedPath ? 1 : p.banks);
+    const eccFo4 = !p.od_ecc_logic ? 0 : p.odecc_model ? eccStageFo4(ecc, p.odecc_pipe) : 24;
+    return { ecc, prac, cells, segs, counterRows, sharedPath, gatesBg, eccFo4, ioScale: p.odecc_model || (p.prac && p.prac_model) ? gatesBg / ECC_REF.gates : 1 };
+  }
+
   // Hbm.bank_dims (+ blsa_height, swd_width, decoder_dims)
   function bankGeom(p, t) {
     const ts = techScaled(t);
@@ -172,13 +240,16 @@
     const cells_h = rows * mat_h;
     const swd_total = ts.swd_w * swd_count;
     const blsa_total = blsa_h * rows;
-    // PRAC counter cells: prac_bits per independently activated row segment, beside the ECC columns (no data)
-    const rh_w = p.prac ? p.prac_bits * pow(2, p.ha_layout) * p.subchannels * t.iso_cols * t.pitch_bl : 0;
+    // PRAC counter cells: counter (+ protection) bits per independently activated row segment, beside the ECC
+    // columns (no data); a Chronus counter subarray (prac_when = 2) holds them in a short subarray at the column decoder
+    const cc = circuits(p, t), csub = p.prac && p.prac_model && p.prac_when === 2;
+    const rh_w = p.prac && !csub ? cc.cells * cc.segs * t.iso_cols * t.pitch_bl : 0;
+    const cnt_h = csub ? cc.counterRows * t.iso_rows * t.pitch_wl + blsa_h : 0;
     return {
       rowdec_w: ts.rowdec_w, coldec_h: ts.coldec_h, swd_w: ts.swd_w, blsa_h, ecc_mats, swd_count, rows,
-      mat_w, mat_h, data_w, ecc_w, cells_w, cells_h, swd_total, blsa_total, rh_w,
+      mat_w, mat_h, data_w, ecc_w, cells_w, cells_h, swd_total, blsa_total, rh_w, cnt_h, counter_rows: csub ? cc.counterRows : 0,
       bank_x: ts.rowdec_w + cells_w + swd_total + rh_w,
-      bank_y: ts.coldec_h + cells_h + blsa_total,
+      bank_y: ts.coldec_h + cells_h + blsa_total + cnt_h,
       cell_area_bank: cells_w * cells_h,
       // Hbm.dummy_subarray_height; paired edge subarrays hold data instead (extension)
       dummy_y: p.edge_pairing ? 0 : (t.open_bl ? 2 : 0) * 0.5 * mat_h,
@@ -240,7 +311,8 @@
     const center_w = 2 * bg.rowdec_w; // Hbm.bankdie_dims: "center_height = 2.0*row_dec_width"
     // Hbm.od_ecc_height (scales with the *baseline* bank_y). The viewer draws it as each bank group's
     // I/O control block; the ioctl_h extension overrides its height.
-    const od_ecc_h = p.ioctl_h > 0 ? p.ioctl_h : 0.01 * ref.bank_y;
+    // structural OD-ECC / PRAC: scaled by the logic each bank group's block holds (gates vs DreamRAM's HBM3 engine)
+    const od_ecc_h = p.ioctl_h > 0 ? p.ioctl_h : 0.01 * ref.bank_y * circuits(p, t).ioScale;
     const mbus_h = 0.55 * ref.bank_y; // Hbm.mbus_peri_height
     // Hbm.bankdie_dims. channel_rows = 2 (extension) puts half the channels on each side of the TSVs,
     // each with all of its bank groups, so the die is half as wide and its bank area twice as tall.
@@ -349,7 +421,7 @@
     };
     const bank = parts.csl + parts.ldl + parts.mdl + parts.iosa + parts.eq;
     const flight = g.L_bus / 1000 * S.bus_fo4_mm * fo4;
-    const shared = { ecc: ecc ? pumps * S.ecc * fo4 : 0, bgbus: pumps * busSd * (S.bus_launch * fo4 + S.bus_skew * flight) };
+    const shared = { ecc: pumps * ecc * fo4, bgbus: pumps * busSd * (S.bus_launch * fo4 + S.bus_skew * flight) };
     if (share >= 1) shared.iosa_shared = pumps * S.iosa_shared * fo4;
     if (share === 2) shared.mdl_line = pumps * (parts.mdl + parts.iosa + parts.eq);
     return { bank, shared: Math.max(...Object.values(shared)), parts, sharedParts: shared, fo4, flight };
@@ -361,7 +433,7 @@
     const t = DR.TECH_PRESETS['16nm'], B = DR.normalize({});
     const bb = bankGeom(B, t), sg = stackGeom(B, t, bb, { bank_x: bb.bank_x, bank_y: bb.bank_y });
     const g = stagedGeometry(B, t, bb, sg, pitchRatios(B, t, bb), DR.STAGED.ref_share, 0);
-    const a = stagedTimes(g, g, 0, t.logic_conf, 1, DR.STAGED.ref_share, 1), b = stagedTimes(g, g, 1, t.logic_conf, 1, DR.STAGED.ref_share, 1);
+    const a = stagedTimes(g, g, 0, t.logic_conf, 1, DR.STAGED.ref_share, DR.STAGED.ecc), b = stagedTimes(g, g, 1, t.logic_conf, 1, DR.STAGED.ref_share, DR.STAGED.ecc);
     const kappa = Math.min((DR.STAGED.ref_tck - a.bank) / (b.bank - a.bank), (DR.STAGED.ref_tck - a.shared) / (b.shared - a.shared));
     return (stagedRefCache = { g, kappa });
   }
@@ -393,22 +465,28 @@
     const tck_bank = fixed + wire * numer / denom; // Hbm.core_tck: CSL + MDL over the bank, LDL over a MAT
     const tck_bgbus = fixed + wire * (sg.non_tsv_y / 2) * crat(bgr, t.c_within_sparse) / (ref.non_tsv_y / 2);
     const pumps = p.atom_size / sg.pg.min_atom;
-    let staged = null;
+    const cc = circuits(p, t), eccBank = p.odecc_model && p.odecc_where === 1;
+    const sharedEcc = eccBank ? 0 : cc.eccFo4;
+    let staged = null, ecc_bank = 0;
     if (p.tccd_staged) {
       // tCCD_L = core_tck × pumps (Hbm.tccdl) = max(pumps × serial bank cycle, shared bank-group stage per atom),
       // with every shared stage paid per pump or per BG-BUS transfer
       const R = stagedRef();
-      staged = stagedTimes(stagedGeometry(p, t, bg, sg, pr, p.mdl_share, p.col_mid), R.g, R.kappa, t.logic_conf, pumps, p.mdl_share, p.od_ecc_logic, p.mdl_bgbus_sd);
+      staged = stagedTimes(stagedGeometry(p, t, bg, sg, pr, p.mdl_share, p.col_mid), R.g, R.kappa, t.logic_conf, pumps, p.mdl_share, sharedEcc, p.mdl_bgbus_sd);
       staged.kappa = R.kappa;
-      staged.limiter = staged.shared > pumps * staged.bank ? DR.STAGE_LABELS[Object.entries(staged.sharedParts).sort((x, y) => y[1] - x[1])[0][0]] : 'bank cycle';
+      // per-bank OD-ECC (odecc_where = 1): each bank decodes its own words, once per pump
+      ecc_bank = eccBank ? cc.eccFo4 * staged.fo4 : 0;
+      staged.eccBank = ecc_bank;
+      staged.limiter = staged.shared > pumps * Math.max(staged.bank, ecc_bank) ? DR.STAGE_LABELS[Object.entries(staged.sharedParts).sort((x, y) => y[1] - x[1])[0][0]]
+        : ecc_bank > staged.bank ? 'per-bank OD-ECC' : 'bank cycle';
     }
-    const core_tck = staged ? Math.max(staged.bank, staged.shared / pumps) : p.tccd_bgbus ? Math.max(tck_bank, tck_bgbus) : tck_bank;
+    const core_tck = staged ? Math.max(staged.bank, ecc_bank, staged.shared / pumps) : p.tccd_bgbus ? Math.max(tck_bank, tck_bgbus) : tck_bank;
     // Stage breakdown for the Timing tab even when the staged model does not set tCCD_L (display only)
     let stagedView = staged;
     if (!stagedView) {
       try {
         const R = stagedRef();
-        stagedView = stagedTimes(stagedGeometry(p, t, bg, sg, pr, p.mdl_share, p.col_mid), R.g, R.kappa, t.logic_conf, pumps, p.mdl_share, p.od_ecc_logic, p.mdl_bgbus_sd);
+        stagedView = stagedTimes(stagedGeometry(p, t, bg, sg, pr, p.mdl_share, p.col_mid), R.g, R.kappa, t.logic_conf, pumps, p.mdl_share, sharedEcc, p.mdl_bgbus_sd);
       } catch (e) { stagedView = null; }
     }
     const dq_speed = p.mdl_bgbus_sd * p.bgbus_gbus_sd * p.gbus_tsv_sd * p.tsv_dq_sd * p.bgbuses_per_gbus;
@@ -428,15 +506,29 @@
     let tras = trcd + t._tras_restore * restore;
     let twr = tsig + t._twr_restore * restore;
     let trtp = 5 * core_tck / 4 * pumps;
-    // prac: the activation counter update (ACU) runs after PRE on the bank's own column path; the row restores
-    // meanwhile, so tRAS can end right after sensing (DDR5 PRAC, calibrated in DR.PRAC)
-    const acu = p.prac ? DR.PRAC.acu_cycles * (staged ? staged.bank : tck_bank) : 0;
-    if (p.prac) {
+    // prac: the activation counter update (ACU). DDR5 ratio: acu_cycles × the bank's column cycle. Structural:
+    // counter read, decode, +1, encode, write and the counter cells' write recovery, plus queueing on a shared path
+    let acu = 0, prac_parts = null;
+    if (p.prac && p.prac_model) {
+      const R = stagedRef();
+      const pt = stagedTimes(stagedGeometry(p, t, bg, sg, pr, cc.sharedPath ? 1 : 0, p.col_mid), R.g, R.kappa, t.logic_conf, 1, 0, 0);
+      const lv = (n) => n * LEVEL_FO4 * pt.fo4;
+      const col = pt.parts.csl + pt.parts.ldl + pt.parts.mdl + pt.parts.iosa;
+      const rows = p.prac_when === 2 ? cc.counterRows : p.mat_rows;
+      const blr = (r) => t._c_bl_per_cell * r * t.iso_rows;
+      prac_parts = { read: col, decode: lv(cc.prac.dec_levels), increment: lv(cc.prac.inc_levels), encode: lv(cc.prac.enc_levels), equalise: pt.parts.eq, write: col };
+      const busy = Object.values(prac_parts).reduce((a, b) => a + b, 0);
+      prac_parts.restore = t._twr_restore * (t._c_cell + blr(rows)) / (t._c_cell + blr(t.mat_rows_ref));
+      prac_parts.queue = cc.sharedPath ? (p.banks - 1) * busy : 0;
+      acu = Object.values(prac_parts).reduce((a, b) => a + b, 0);
+    } else if (p.prac) acu = DR.PRAC.acu_cycles * (staged ? staged.bank : tck_bank);
+    const afterPre = p.prac && (!p.prac_model || p.prac_when === 0);
+    if (afterPre) { // the row restores during the update, so tRAS can end right after sensing (DDR5 PRAC)
       trp += acu;
       tras = Math.max(DR.PRAC.tras_floor * trcd, tras - acu);
       trtp *= DR.PRAC.trtp_scale;
       twr = Math.max(DR.PRAC.twr_scale * twr, twr - acu);
-    }
+    } else if (p.prac) tras = Math.max(tras, trcd + acu); // PRHT / Chronus: done before PRE
 
     const tsv_c = t._c_tsv * (t.tsv_pitch / t._tsv_pitch) * (t.tsv_height / t._tsv_height) + t._c_load;
     const rise = -Math.log(1 - 0.8);
@@ -464,7 +556,7 @@
     ];
     return {
       core_tck, tck_bank, tck_bgbus, tck_fixed: fixed, limiter: staged ? staged.limiter : p.tccd_bgbus && tck_bgbus > tck_bank ? 'BG-BUS window' : 'bank column path',
-      bw, bw_peak, trcd, trp, tras, trc: tras + trp, trtp, twr, acu, tcl, latency: tcl + trcd + trp, dq_rate: dq_speed / core_tck,
+      bw, bw_peak, trcd, trp, tras, trc: tras + trp, trtp, twr, acu, prac_parts, prac_after_pre: afterPre, ecc_bank, circuits: cc, tcl, latency: tcl + trcd + trp, dq_rate: dq_speed / core_tck,
       tccdl, tccds, bg_rate, pc_rate, bgs_needed, bgs_per_pc, levels, pumps, staged, stagedView,
     };
   }
@@ -504,7 +596,7 @@
   };
 
   DR.compute = function (params, techKey) {
-    const t = DR.TECH_PRESETS[techKey] || DR.TECH_PRESETS['16nm'];
+    let t = DR.TECH_PRESETS[techKey] || DR.TECH_PRESETS['16nm'];
     const p = DR.normalize(params);
     const B = DR.normalize({});
     // Baseline references (dreamram.main computes these from the baseline design before the sweep)
@@ -513,6 +605,8 @@
     const bs = stackGeom(B, t, bb, ref0);
     const ref = Object.assign(ref0, { die_h: bs.die_h, non_tsv_y: bs.non_tsv_y, n_bgbus: wireCounts(B, t, bs.pg).bgbus });
 
+    // structural OD-ECC sets the design's check-bit share of the cells (the baseline keeps DreamRAM's 1/8)
+    if (p.odecc_model) t = Object.assign({}, t, { od_ecc: eccCircuit(p.odecc_sym, p.odecc_t, p.odecc_cw, t.md_ecc).check_prop });
     const bg = bankGeom(p, t);
     const sg = stackGeom(p, t, bg, ref);
     const pg = sg.pg;
@@ -543,11 +637,11 @@
     const parts = [
       ['cells', 'Data cells', n * b.data_w * dataRowsCells],
       ['ecc', 'ECC cells', n * b.ecc_w * dataRowsCells],
-      ['prac', 'PRAC counter cells', n * b.rh_w * (b.cells_h + b.blsa_total)],
+      ['prac', 'PRAC counter cells', n * (b.rh_w * (b.cells_h + b.blsa_total) + (b.bank_x - b.rowdec_w) * b.cnt_h)],
       ['extrarow', 'Extra / SALP rows', n * b.cells_w * extraRowsCells],
       ['blsa', 'BLSA', n * b.cells_w * b.blsa_total],
       ['swd', 'SWD + conj.', n * b.swd_total * (b.cells_h + b.blsa_total)],
-      ['rowdec', 'Row dec', n * b.rowdec_w * (b.cells_h + b.blsa_total)],
+      ['rowdec', 'Row dec', n * b.rowdec_w * (b.cells_h + b.blsa_total + b.cnt_h)],
       ['coldec', 'Col dec + corner', n * b.bank_x * b.coldec_h],
       ['dummy', 'Dummy subarrays', n * b.bank_x * b.dummy_y],
       ['ctrl', 'Control stripes', s.cols * s.center_w * (s.non_tsv_y - s.mbus_h)],
@@ -582,6 +676,8 @@
       add('tRTP', m.timing.trtp, ex.metrics.trtp);
       add('tWR', m.timing.twr, ex.metrics.twr);
       add('PRAC counter update', m.timing.acu, ex.derived && ex.derived.prac_acu_ns);
+      add('I/O control height', m.stack.od_ecc_h, ex.derived && ex.derived.ioctl_h_um);
+      add('per-bank OD-ECC stage', m.timing.ecc_bank, ex.derived && ex.derived.ecc_bank_ns);
       add('tCCD_L', m.timing.tccdl, ex.metrics.tccdl);
       add('bank-path stage', m.timing.tck_bank, ex.derived && ex.derived.tck_bank_stage);
       add('BG-BUS stage', m.timing.tck_bgbus, ex.derived && ex.derived.tck_bgbus_stage);

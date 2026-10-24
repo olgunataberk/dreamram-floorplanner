@@ -219,6 +219,14 @@
   // corrupts the two MATs on either side of it, costs each codeword as few symbols as possible.
   DR.eccLayout = function (m) {
     const p = m.p, b = m.bank, ip = m.pages.ind_pages;
+    if (p.odecc_model) {
+      // structural engine: odecc_cw codewords per 32 B over odecc_sym-bit symbols, each correcting odecc_t symbols.
+      // A driver fault corrupts the two MATs beside it: 2 × ldls_mdls bits, spread over the access's codewords
+      const e = DR.eccCircuit(p.odecc_sym, p.odecc_t, p.odecc_cw, m.t.md_ecc, p.atom_size);
+      const dataMats = p.mats / ip, eccMats = b.ecc_mats / ip, hits = Math.ceil(2 * p.ldls_mdls / (p.odecc_sym * e.ncw));
+      return { dataMats, eccMats, active: dataMats + eccMats, spm: p.ldls_mdls / p.odecc_sym, n: e.n, k: e.k, check: 2 * p.odecc_t,
+        tCorr: p.odecc_t, swdSymPerCw: hits, ncw: e.ncw, sym: p.odecc_sym, structural: true, correctable: hits <= p.odecc_t };
+    }
     const dataMats = p.mats / ip, eccMats = b.ecc_mats / ip;
     const active = dataMats + eccMats, spm = p.ldls_mdls / 8; // symbols per MAT per access
     const symbols = active * spm, n = symbols / 2;
@@ -309,9 +317,11 @@
       kids.push(mk('dummy', 'Dummy half-subarray', F(0, 0, b.bank_x, d2)));
       kids.push(mk('dummy', 'Dummy half-subarray', F(0, d2 + b.bank_y, b.bank_x, d2)));
     }
-    kids.push(mk('rowdec', 'Row decoder', F(0, d2, b.rowdec_w, arrH)));
-    kids.push(mk('corner', 'Decoder corner', F(0, d2 + arrH, b.rowdec_w, b.coldec_h)));
-    kids.push(mk('coldec', 'Column decoder', F(b.rowdec_w, d2 + arrH, b.bank_x - b.rowdec_w, b.coldec_h)));
+    // a Chronus counter subarray (PRAC extension) sits between the array and the column decoder
+    kids.push(mk('rowdec', 'Row decoder', F(0, d2, b.rowdec_w, arrH + b.cnt_h)));
+    if (b.cnt_h) kids.push(mk('rhcells', `PRAC counter subarray (${b.counter_rows} rows)`, F(b.rowdec_w, d2 + arrH, b.bank_x - b.rowdec_w, b.cnt_h)));
+    kids.push(mk('corner', 'Decoder corner', F(0, d2 + arrH + b.cnt_h, b.rowdec_w, b.coldec_h)));
+    kids.push(mk('coldec', 'Column decoder', F(b.rowdec_w, d2 + arrH + b.cnt_h, b.bank_x - b.rowdec_w, b.coldec_h)));
     const cols = bk.matCols || (bk.matCols = DR.matColumns(m));
     let v = d2;
     for (const row of DR.subarrayRows(p)) {

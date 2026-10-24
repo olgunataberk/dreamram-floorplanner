@@ -77,7 +77,8 @@ PARAMS = ['sids', 'channels', 'ch_per_die', 'pch', 'horiz_bg', 'vert_bg', 'banks
 EXTENSIONS = {'coupled_rows': 1, 'coupled_lsb': 0, 'edge_pairing': 0, 'ioctl_h': 0, 'channel_rows': 1, 'tccd_bgbus': 0,
               'tck_fixed': 1, 'tck_fixed_scale': 0, 'tck_wire': 1, 'bw_bg_cap': 0, 'tsv_chain': 0,
               'tccd_staged': 0, 'mdl_share': 1, 'col_mid': 0, 'od_ecc_logic': 1,
-              'prac': 0, 'prac_bits': 12}  # coupled_lsb only labels rows
+              'prac': 0, 'prac_bits': 12, 'prac_model': 0, 'prac_when': 0, 'prac_path': 0, 'prac_prot': 0,
+              'odecc_model': 0, 'odecc_sym': 8, 'odecc_t': 1, 'odecc_cw': 2, 'odecc_where': 0, 'odecc_pipe': 1}  # coupled_lsb only labels rows
 
 
 METRICS = ['capacity_gbytes', 'bw_gbytes', 'worst_latency_ns', 'metric_e_per_bit_closed',
@@ -122,7 +123,9 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
                          overrides.get('channel_rows', 1), overrides.get('tccd_bgbus', 0),
                          **{k: overrides.get(k, EXTENSIONS[k]) for k in ('tck_fixed', 'tck_fixed_scale', 'tck_wire', 'bw_bg_cap', 'tsv_chain',
                                                                          'tccd_staged', 'mdl_share', 'col_mid', 'od_ecc_logic',
-                                                                         'prac', 'prac_bits')})
+                                                                         'prac', 'prac_bits', 'prac_model', 'prac_when', 'prac_path',
+                                                                         'prac_prot', 'odecc_model', 'odecc_sym', 'odecc_t', 'odecc_cw',
+                                                                         'odecc_where', 'odecc_pipe')})
 
     def make(p, ref, cls=Hbm):
         kw = dict(sids=p['sids'], channels=p['channels'], ch_per_die=p['ch_per_die'], pch=p['pch'],
@@ -161,7 +164,10 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
     p.update({k: v for k, v in overrides.items() if k not in EXTENSIONS})
     dram = make(p, ref, Model)
     dram._bgbus_len_ref = bgbus_len_ref  # baseline BG-BUS length for tccd_bgbus
-    if overrides.get('tccd_staged'):
+    if overrides.get('odecc_model'):  # structural OD-ECC sets its own check-bit share of the cells
+        dram.od_ecc_prop = ecc_circuit(overrides.get('odecc_sym', 8), overrides.get('odecc_t', 1), overrides.get('odecc_cw', 2),
+                                       dram.md_ecc_prop)['check_prop']
+    if overrides.get('tccd_staged') or overrides.get('odecc_model') or (overrides.get('prac') and overrides.get('prac_model')):
         dram._staged_ref = staged_reference(dreamram_dir, mem_json)
 
     # run DreamRAM's own simulate() for the metrics and its discard filters
@@ -223,7 +229,8 @@ def staged_geometry(dram, tech, share, col_mid):
 
 
 def staged_times(g, ref, kappa, logic_conf, pumps, share, ecc, bus_sd=1):
-    """(bank cycle per pump, shared stage per atom, bank parts, shared parts per atom) in ns."""
+    """(bank cycle per pump, shared stage per atom, bank parts, shared parts per atom) in ns. ecc is the OD-ECC + DBI
+    stage in FO4 (0 when the stage is off or sits in each bank)."""
     fo4 = kappa * (g['f'] / 0.016) ** logic_conf
     rc = lambda r, c, L: 0.38 * r * c * L * L * 1e-3  # distributed RC (Elmore), ohm * pF = ps
     load = lambda k: g['c_' + k] * g['L_' + k] / (ref['c_' + k] * ref['L_' + k])
@@ -237,7 +244,7 @@ def staged_times(g, ref, kappa, logic_conf, pumps, share, ecc, bus_sd=1):
     }
     bank = sum(parts.values())
     flight = g['L_bus'] / 1000 * STAGED['bus_fo4_mm'] * fo4
-    shared = {'ecc': pumps * STAGED['ecc'] * fo4 if ecc else 0.0,
+    shared = {'ecc': pumps * ecc * fo4,
               'bgbus': pumps * bus_sd * (STAGED['bus_launch'] * fo4 + STAGED['bus_skew'] * flight)}
     if share >= 1:
         shared['iosa_shared'] = pumps * STAGED['iosa_shared'] * fo4
@@ -252,8 +259,8 @@ def staged_reference(dreamram_dir, mem_json):
     with contextlib.redirect_stdout(io.StringIO()):
         dram, tech, _, _, _ = build(dreamram_dir, mem_json, 'configs/tech/scaled/16nm_scaled.json', {}, None)
     g = staged_geometry(dram, tech, STAGED['ref_share'], 0)
-    a = staged_times(g, g, 0.0, tech.logic_scale_conf, 1, STAGED['ref_share'], 1)
-    b = staged_times(g, g, 1.0, tech.logic_scale_conf, 1, STAGED['ref_share'], 1)
+    a = staged_times(g, g, 0.0, tech.logic_scale_conf, 1, STAGED['ref_share'], STAGED['ecc'])
+    b = staged_times(g, g, 1.0, tech.logic_scale_conf, 1, STAGED['ref_share'], STAGED['ecc'])
     # tCCD_L = max(bank, shared) is affine in kappa on each side: pick the kappa that makes the larger one 2 ns
     kappa = min((STAGED['ref_tck'] - a[0]) / (b[0] - a[0]), (STAGED['ref_tck'] - a[1]) / (b[1] - a[1]))
     return g, kappa
@@ -274,9 +281,88 @@ PRAC = {
 }
 
 
+# ---- structural on-die ECC and PRAC circuits (odecc_model, prac_model) ------------------------------------------
+# Logic is counted in 2-input-gate equivalents and logic levels. One level costs LEVEL_FO4 FO4, calibrated so the
+# HBM3 OD-ECC (two RS(19,17) codewords over 8-bit symbols per 32 B, t = 1; Ryu et al.) decodes in the staged model's
+# 24 FO4 prior. Gate counts set the I/O-control height relative to that same HBM3 engine, which DreamRAM sizes at 1%
+# of the baseline bank height, so the node cancels out. js/model.js mirrors this section.
+import math as _m
+
+CIRC = {
+    'dbi_gates_byte': 25,   # popcount of 8 bits + majority compare + 8 inverting XORs
+    'dbi_levels': 7,        # in parallel with the ECC decode (Ryu et al.: shared logic)
+    'reg_fo4': 2,           # pipeline register overhead when the ECC stage is split
+    'inc_gates_bit': 21 / 8,  # Chronus (Canpolat et al., HPCA 2025): 8-bit decrementer in 21 gates
+    'ff_gates': 6,          # flip-flop / latch bit, in gate equivalents
+    'sa_gates': 20,         # counter IOSA + write driver per counter bit
+    'row_addr_bits': 17,    # PRHT keeps three row-address latches (current, max, mitigation)
+}
+
+
+def _lg(x):
+    return max(0, _m.ceil(_m.log2(x))) if x > 1 else 0
+
+
+def ecc_circuit(sym, t, cw32, md_prop, atom=256):
+    """Symbol-based OD-ECC engine for one access of `atom` data bits: cw32 Reed-Solomon codewords per 32 B over
+    sym-bit symbols, correcting t symbols each. Returns check-bit share of the cells, gates, decode/encode levels."""
+    ncw = cw32 * atom // 256
+    kb = 256 * (1 + md_prop) / cw32           # data + metadata bits per codeword (HBM4: 272 b per 32 B)
+    k = _m.ceil(kb / sym)
+    n, rb = k + 2 * t, 2 * t * sym
+    nb = k * sym + rb
+    syn = rb * (nb / 2 - 1)                     # syndrome bits: XOR of half the codeword each
+    enc = rb * (k * sym / 2 - 1)                # check-bit generator for writes
+    const = sym * (sym / 2 - 1)                 # constant GF(2^m) multiply
+    mul = 2 * sym * sym                         # variable GF(2^m) multiply
+    lv_const, lv_mul, lv_cmp = _lg(sym / 2), 2 + _lg(sym), 1 + _lg(sym)
+    lv_inv = (_lg(sym) + 1) * lv_mul            # inverse by exponentiation
+    if t == 1:  # S0 is the error value; the position i with S1 == alpha^i S0 is the error
+        loc, lv_loc = n * (const + 2 * sym), lv_const + lv_cmp
+    else:       # Peterson (sigma from syndromes) + Chien search + Forney values
+        loc = 6 * mul + (_lg(sym) + 1) * mul + n * (2 * const + 3 * sym) + n * mul
+        lv_loc = (2 * lv_mul + lv_inv) + (lv_const + 1 + lv_cmp) + lv_mul
+    corr = 2 * k * sym
+    dec_levels = _lg(nb / 2) + lv_loc + 2
+    gates = ncw * (syn + enc + loc + corr) + atom / 8 * CIRC['dbi_gates_byte']
+    return dict(ncw=ncw, n=n, k=k, nb=nb, check_prop=cw32 * rb / 256, gates=gates, dec_levels=dec_levels,
+                enc_levels=_lg(k * sym / 2), levels=max(dec_levels, CIRC['dbi_levels']))
+
+
+ECC_REF = ecc_circuit(8, 1, 2, 1 / 16)          # HBM3 (Ryu et al.)
+LEVEL_FO4 = STAGED['ecc'] / ECC_REF['levels']  # FO4 per logic level
+
+
+def ecc_stage_fo4(e, pipe):
+    """FO4 of the OD-ECC + DBI stage that bounds throughput, split into `pipe` register stages."""
+    return e['levels'] * LEVEL_FO4 / pipe + (CIRC['reg_fo4'] if pipe > 1 else 0)
+
+
+def prac_circuit(bits, prot, ecc):
+    """Counter-update logic for one bank: counter IOSAs / write drivers, incrementer, threshold compare, PRHT latches
+    and the counter's protection. prot: 0 none, 1 parity, 2 own SEC-DED code, 3 inside the OD-ECC codeword."""
+    if prot == 1:
+        extra, enc_l, dec_l, code = 1, _lg(bits + 1), _lg(bits + 1), bits
+    elif prot == 2:
+        r = 1
+        while 2 ** r < bits + r + 1:
+            r += 1
+        r += 1                                       # + overall parity for double-error detection
+        extra, enc_l, dec_l, code = r, _lg(bits / 2), _lg(bits / 2) + _lg(r) + 1, 2 * r * bits / 2 + bits * (r + 1)
+    elif prot == 3:  # read, correct and re-encode the whole codeword holding the counter
+        extra, enc_l, dec_l, code = 0, ecc['enc_levels'], ecc['dec_levels'], 0
+    else:
+        extra, enc_l, dec_l, code = 0, 0, 0, 0
+    width = bits + extra if prot != 3 else ecc['nb']  # bits the counter path reads and writes
+    gates = (CIRC['inc_gates_bit'] * bits + 2 * bits + CIRC['ff_gates'] * (bits + 3 * CIRC['row_addr_bits'])
+             + CIRC['sa_gates'] * width + code)
+    return dict(cells=bits + extra, width=width, gates=gates, inc_levels=_lg(bits) + 1, enc_levels=enc_l, dec_levels=dec_l)
+
+
 def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgbus=0,
                  tck_fixed=1, tck_fixed_scale=0, tck_wire=1, bw_bg_cap=0, tsv_chain=0,
-                 tccd_staged=0, mdl_share=1, col_mid=0, od_ecc_logic=1, prac=0, prac_bits=12):
+                 tccd_staged=0, mdl_share=1, col_mid=0, od_ecc_logic=1, prac=0, prac_bits=12, prac_model=0, prac_when=0,
+                 prac_path=0, prac_prot=0, odecc_model=0, odecc_sym=8, odecc_t=1, odecc_cw=2, odecc_where=0, odecc_pipe=1):
     """Hbm subclass adding coupled rows, edge-subarray pairing and an I/O-control height override
     (identical to Hbm when all are off)."""
     import numpy as np
@@ -404,45 +490,128 @@ def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgb
             c = tech.c_ratio(self.bgbus_pitch_ratio(tech), tech._c_within_layer_sparse)
             return self.fixed_tck(tech) + (self._tck - tck_fixed) * length * c / self._bgbus_len_ref
 
+        def ecc(self):
+            return ecc_circuit(odecc_sym, odecc_t, odecc_cw, self.md_ecc_prop, self.atom_size) if odecc_model else None
+
+        def ecc_fo4(self):
+            # OD-ECC + DBI stage in FO4: the 24 FO4 prior, or the structural engine split into odecc_pipe stages
+            if not od_ecc_logic:
+                return 0
+            return ecc_stage_fo4(self.ecc(), odecc_pipe) if odecc_model else STAGED['ecc']
+
         def staged(self, tech):
             ref, kappa = self._staged_ref
             g = staged_geometry(self, tech, mdl_share, col_mid)
-            return staged_times(g, ref, kappa, tech.logic_scale_conf, self.pumps_per_atom(), mdl_share, od_ecc_logic,
+            shared_ecc = 0 if (odecc_model and odecc_where == 1) else self.ecc_fo4()
+            return staged_times(g, ref, kappa, tech.logic_scale_conf, self.pumps_per_atom(), mdl_share, shared_ecc,
                                 self.mdl_bgbus_sd)
+
+        def ecc_bank_stage(self, tech):
+            # per-bank OD-ECC (odecc_where = 1): each bank decodes its own words, once per pump
+            if not (odecc_model and odecc_where == 1):
+                return 0.0
+            _, kappa = self._staged_ref
+            return self.ecc_fo4() * kappa * (tech.f / 0.016) ** tech.logic_scale_conf
 
         # PRAC: counter cells (prac_bits per independently activated row segment) widen every subarray row; they hold
         # no data, so cell_area (and cell efficiency) leaves them out
+        def prac_circ(self):
+            return prac_circuit(prac_bits, prac_prot, self.ecc() or ecc_circuit(8, 1, 2, self.md_ecc_prop, self.atom_size)) \
+                if (prac and prac_model) else None
+
+        def prac_cells(self):
+            # counter bits (+ protection) per independently activated row segment
+            return (self.prac_circ()['cells'] if prac_model else prac_bits) if prac else 0
+
         def prac_width(self, tech):
-            return prac_bits * self.ind_row_pages() * self.isolation_cols_overhead * tech.pitch_bl if prac else 0.0
+            # in-row counter columns; the Chronus counter subarray (prac_when = 2) keeps them out of the rows
+            if not prac or (prac_model and prac_when == 2):
+                return 0.0
+            return self.prac_cells() * self.ind_row_pages() * self.isolation_cols_overhead * tech.pitch_bl
+
+        def counter_rows(self):
+            # Chronus: every row's counter lives in a small counter subarray at the bank edge
+            rows = self.subarrays * self.mat_rows * self.ind_row_pages() * self.prac_cells()
+            return _m.ceil(rows / (self.mats * self.mat_cols))
+
+        def counter_height(self, tech):
+            if not (prac and prac_model and prac_when == 2):
+                return 0.0
+            return self.counter_rows() * self.isolation_rows_overhead * tech.pitch_wl + self.blsa_height(tech)
 
         def bank_dims(self, tech):
             x, y, cells = super().bank_dims(tech)
-            return x + self.prac_width(tech), y, cells
+            return x + self.prac_width(tech), y + self.counter_height(tech), cells
+
+        def prac_shared_path(self):
+            # the update runs over the bank group's I/O control when asked to, or when the counter sits inside an
+            # OD-ECC codeword whose only decoder is the bank group's
+            return prac_path == 1 or (prac_prot == 3 and not (odecc_model and odecc_where == 1))
+
+        def prac_parts(self, tech):
+            """Activation counter update, ns by component (prac_model = 1)."""
+            ref, kappa = self._staged_ref
+            fo4 = kappa * (tech.f / 0.016) ** tech.logic_scale_conf
+            shared = self.prac_shared_path()
+            g = staged_geometry(self, tech, 1 if shared else 0, col_mid)
+            _, _, pt, _ = staged_times(g, ref, kappa, tech.logic_scale_conf, 1, 0, 0)
+            c = self.prac_circ()
+            lv = lambda n: n * LEVEL_FO4 * fo4
+            col = pt['csl'] + pt['ldl'] + pt['mdl'] + pt['iosa']  # one column read (or write: IOSA -> write driver)
+            # counter cells restore after the write; a counter subarray's short bitlines restore faster
+            rows = self.counter_rows() if prac_when == 2 else self.mat_rows
+            bl = lambda r: tech._c_bl_per_cell * r * self.isolation_rows_overhead
+            restore = tech._twr_restore * (tech._c_cell + bl(rows)) / (tech._c_cell + bl(tech._mat_rows_ref))
+            parts = dict(read=col, decode=lv(c['dec_levels']), increment=lv(c['inc_levels']), encode=lv(c['enc_levels']),
+                         equalise=pt['eq'], write=col)
+            busy = sum(parts.values())  # the counter path is occupied this long
+            parts['restore'] = restore
+            # worst case: an all-bank precharge queues every bank of the group on one shared counter path
+            parts['queue'] = (self.banks - 1) * busy if shared else 0.0
+            return parts
 
         def acu_time(self, tech):
-            # counter read-modify-write on the bank's own column path: acu_cycles x one column cycle (one pump)
+            if prac_model:
+                return sum(self.prac_parts(tech).values())
+            # DDR5 ratio: acu_cycles x one column cycle of the bank's own path (one pump)
             return PRAC['acu_cycles'] * (self.staged(tech)[0] if tccd_staged else self.bank_stage_tck(tech))
 
+        def prac_after_pre(self):
+            return prac and (not prac_model or prac_when == 0)
+
         def trp(self, tech):
-            return super().trp(tech) + (self.acu_time(tech) if prac else 0)
+            return super().trp(tech) + (self.acu_time(tech) if self.prac_after_pre() else 0)
 
         def tras(self, tech):
             t = super().tras(tech)
-            return max(PRAC['tras_floor'] * self.trcd(tech), t - self.acu_time(tech)) if prac else t
+            if self.prac_after_pre():
+                return max(PRAC['tras_floor'] * self.trcd(tech), t - self.acu_time(tech))
+            if prac:  # PRHT (row open) or Chronus (counter subarray): the update must finish before PRE
+                return max(t, self.trcd(tech) + self.acu_time(tech))
+            return t
 
         def trtp(self, tech):
-            return super().trtp(tech) * (PRAC['trtp_scale'] if prac else 1)
+            return super().trtp(tech) * (PRAC['trtp_scale'] if self.prac_after_pre() else 1)
 
         def twr(self, tech):
             t = super().twr(tech)
-            return max(PRAC['twr_scale'] * t, t - self.acu_time(tech)) if prac else t
+            return max(PRAC['twr_scale'] * t, t - self.acu_time(tech)) if self.prac_after_pre() else t
+
+        def logic_gates_bg(self):
+            """Gate equivalents in one bank group's I/O control: OD-ECC engine(s) and PRAC logic, per-bank units included."""
+            e = self.ecc() or ECC_REF
+            g = e['gates'] * (self.banks if (odecc_model and odecc_where == 1) else 1)
+            c = self.prac_circ()
+            if c:
+                g += c['gates'] * (1 if self.prac_shared_path() else self.banks)
+            return g
 
         def core_tck(self, tech):
             if tccd_staged:
                 # tCCD_L = core_tck x pumps (Hbm.tccdl) = max(pumps x bank cycle, shared stage per atom); every shared
                 # stage is paid per pump or per transfer, so pumping never amortises it
                 bank, shared, _, _ = self.staged(tech)
-                return max(bank, shared / self.pumps_per_atom())
+                return max(bank, self.ecc_bank_stage(tech), shared / self.pumps_per_atom())
             t = self.bank_stage_tck(tech)
             return max(t, self.bgbus_stage_tck(tech)) if tccd_bgbus else t
 
@@ -458,8 +627,14 @@ def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgb
             return bw
 
         def od_ecc_height(self, tech):
-            # each bank group's I/O control block (IOSA/WD, OD-ECC + DBI, BG-BUS drivers)
-            return float(ioctl_h) if ioctl_h > 0 else super().od_ecc_height(tech)
+            # each bank group's I/O control block (IOSA/WD, OD-ECC + DBI, BG-BUS drivers). With the structural ECC or
+            # PRAC models it scales with the logic it holds, relative to DreamRAM's HBM3 engine (1% of the baseline bank)
+            if ioctl_h > 0:
+                return float(ioctl_h)
+            h = super().od_ecc_height(tech)
+            if odecc_model or (prac and prac_model):
+                h *= self.logic_gates_bg() / ECC_REF['gates']
+            return h
 
     if coupled == 1:  # keep DreamRAM's own datapath accounting untouched
         delattr(ExtendedHbm, 'atom_time')
@@ -508,7 +683,13 @@ def export(dram, tech, p, metrics, status):
             'total_area_mm2': f(dram.total_area(tech)),
             'tck_bank_stage': f(dram.bank_stage_tck(tech)) if hasattr(dram, 'bank_stage_tck') else None,
             'tck_bgbus_stage': f(dram.bgbus_stage_tck(tech)) if hasattr(dram, 'bgbus_stage_tck') else None,
-            **({'prac_acu_ns': f(dram.acu_time(tech)), 'prac_width_um': f(dram.prac_width(tech))} if p.get('prac') else {}),
+            **({'prac_acu_ns': f(dram.acu_time(tech)), 'prac_width_um': f(dram.prac_width(tech)),
+                'prac_counter_h_um': f(dram.counter_height(tech)),
+                **({'prac_parts': {k: f(v) for k, v in dram.prac_parts(tech).items()}} if p.get('prac_model') else {})}
+               if p.get('prac') else {}),
+            **({'odecc': {k: f(v) for k, v in dram.ecc().items()}, 'odecc_fo4': f(dram.ecc_fo4()),
+                'ecc_bank_ns': f(dram.ecc_bank_stage(tech))} if p.get('odecc_model') else {}),
+            'ioctl_h_um': f(dram.od_ecc_height(tech)),
             **({'staged_bank_ns': f(st[0]), 'staged_shared_ns': f(st[1]), 'staged_parts': {k: f(v) for k, v in {**st[2], **st[3]}.items()}}
                if getattr(dram, '_staged_ref', None) and (st := dram.staged(tech)) else {}),
         },

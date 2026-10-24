@@ -186,6 +186,7 @@
   // activation counter update (internal read, +1, internal write; Kim et al., ISSCC 2023) runs after PRE while the
   // row finishes restoring; the bitlines precharge only after it (DDR5 PRAC timing, DR.PRAC).
   function renderRow(container, m, state, P) {
+    // the design's own PRAC choices (model, placement, path, protection), with counting off and on
     const rowTiming = (prac) => DR.compute(Object.assign({}, m.p, { prac }), m.techKey).timing;
     const off = rowTiming(0), on = rowTiming(1);
     if (!off || !on) { container.innerHTML = '<div class="tnote">No timing for this design.</div>'; return; }
@@ -221,23 +222,33 @@
       const lanes = ['Command', 'Wordline', 'Bitlines', ...(prac ? ['Counter (R/H cells)'] : []), 'Precharge'];
       lanes.forEach((l, i) => { txt(8, y + i * LH + LH / 2 + 4, l, 'tlabel'); out.push(`<line x1="${labelW}" x2="${W - 16}" y1="${y + i * LH + LH}" y2="${y + i * LH + LH}" class="tlane"/>`); });
       const L = (k) => y + lanes.indexOf(k) * LH;
-      const acu = prac ? tm.acu : 0, preEnd = tm.tras + acu + (tm.trp - acu);
+      // after PRE (DDR5 PRAC) the update sits between PRE and the bitline precharge; PRHT / Chronus run it from tRCD
+      const after = prac && tm.prac_after_pre, acu = prac ? tm.acu : 0;
+      const a0 = after ? tm.tras : tm.trcd, pre0 = tm.tras + (after ? acu : 0), preEnd = tm.trc;
       box(L('Command'), 0, Math.min(1, tm.trcd), c.cmd, 'ACT', 'ACTIVATE');
       box(L('Command'), tm.trcd, tm.trcd + 1, c.cmd, 'RD', 'READ (earliest, tRCD after ACT)');
       box(L('Command'), tm.tras, tm.tras + 1, c.cmd, 'PRE', `PRECHARGE (earliest, tRAS = ${f2(tm.tras)} ns after ACT)`);
       box(L('Command'), tm.trc, tm.trc + 1, c.cmd, 'ACT', `next ACTIVATE to this bank: tRC = tRAS + tRP = ${f2(tm.trc)} ns`);
-      box(L('Wordline'), 0, tm.tras + acu, c.wl, 'wordline high', `wordline open for ${f2(tm.tras + acu)} ns${prac ? ' (through the counter update)' : ''}`);
+      box(L('Wordline'), 0, pre0, c.wl, 'wordline high', `wordline open for ${f2(pre0)} ns${after ? ' (through the counter update)' : ''}`);
       box(L('Bitlines'), 0, tm.trcd, c.sense, 'sense', `charge sharing + sensing: ${f2(tm.trcd)} ns`);
       box(L('Bitlines'), tm.trcd, restoreEnd, c.restore, 'restore', `restore into the cells until ${f2(restoreEnd)} ns${prac ? ', overlapping the counter update' : ''}`);
-      if (prac) {
-        const a = tm.tras;
+      if (prac && tm.prac_parts) { // structural: each component of the update, in order
+        const lab = { queue: 'wait', read: 'IRD', decode: 'dec', increment: '+1', encode: 'enc', equalise: 'eq', write: 'IWR', restore: 'restore' };
+        const why = { queue: 'waiting for the shared counter path (worst case: every bank of the group after an all-bank PRE)', read: 'internal read of the counter', decode: 'check / correct the counter', increment: 'increment and threshold compare', encode: 'new check bits', equalise: 'counter path equalise', write: 'internal write back', restore: 'counter cells restore (write recovery)' };
+        let a = a0;
+        for (const k of ['queue', 'read', 'decode', 'increment', 'encode', 'equalise', 'write', 'restore']) {
+          const d = tm.prac_parts[k];
+          if (d > 0) { box(L('Counter (R/H cells)'), a, a + d, k === 'restore' ? c.restore : c.acu, lab[k], `${why[k]}: ${f2(d)} ns`); a += d; }
+        }
+      } else if (prac) {
+        const a = a0;
         box(L('Counter (R/H cells)'), a, a + 0.4 * acu, c.acu, 'IRD', 'internal read of the row\'s activation counter through the PRHT IOSA');
         box(L('Counter (R/H cells)'), a + 0.4 * acu, a + 0.6 * acu, c.acu, '+1', 'adder: count + 1, compare with the running maximum');
-        box(L('Counter (R/H cells)'), a + 0.6 * acu, a + acu, c.acu, 'IWR', `internal write back; activation counter update = ${f2(acu)} ns`);
+        box(L('Counter (R/H cells)'), a + 0.6 * acu, a + acu, c.acu, 'IWR', `internal write back; activation counter update = ${f2(acu)} ns (DDR5 ratio)`);
       }
-      box(L('Precharge'), tm.tras + acu, preEnd, c.pre, 'precharge', `bitline equalise: ${f2(tm.trp - acu)} ns`);
+      box(L('Precharge'), pre0, preEnd, c.pre, 'precharge', `bitline equalise: ${f2(preEnd - pre0)} ns`);
       y += lanes.length * LH + 18;
-      bracket(y, tm.tras, tm.trc, `tRP ${f2(tm.trp)}${prac ? ` (incl. counter update ${f2(acu)})` : ''}`);
+      bracket(y, tm.tras, tm.trc, `tRP ${f2(tm.trp)}${after ? ` (incl. counter update ${f2(acu)})` : ''}`);
       y += 12;
       bracket(y + 10, 0, tm.trc, `tRC ${f2(tm.trc)}`);
       y += 40;
@@ -248,7 +259,7 @@
         <div class="tseg">${Object.entries(SCENARIOS).map(([k, v]) => `<button data-scen="${k}" class="${k === 'row' ? 'on' : ''}">${v.label}</button>`).join('')}</div>
         <div class="tsum">counter update <b>${f2(on.acu)} ns</b> · tRC <b>${f2(off.trc)} → ${f2(on.trc)} ns</b> · row-miss latency <b>${f2(off.latency)} → ${f2(on.latency)} ns</b>${m.p.prac ? '' : ' · PRAC is off for this design (shown for comparison)'}</div>
       </div>
-      <div class="twhy">Per-row activation counting keeps a ${m.p.prac_bits}-bit counter for every row. After each activation the bank reads it through a small IOSA, adds one and writes it back (PRHT, Kim et al., ISSCC 2023). DDR5 PRAC runs this counter update after PRECHARGE while the row finishes restoring, so tRP grows by the update time, tRAS can end right after sensing, and tRC grows only by what the restore cannot hide. Here the update takes ${f2(DR.PRAC.acu_cycles)} column cycles, the ratio DDR5-3200 shows (21 ns over a 5 ns tCCD_L).</div>
+      <div class="twhy">${on.prac_parts ? `Structural counter update (${['after PRE, as DDR5 PRAC', 'while the row is open, as PRHT', 'in a counter subarray, as Chronus'][m.p.prac_when]}; ${m.p.prac_path || on.circuits.sharedPath ? 'shared I/O-control path' : 'per-bank path'}; counter protection: ${['none', 'parity', 'own SEC-DED', 'inside the OD-ECC codeword'][m.p.prac_prot]}): ${Object.entries(on.prac_parts).filter(([, v]) => v > 0).map(([k, v]) => `${k} ${f2(v)}`).join(' + ')} = ${f2(on.acu)} ns. ` : ''}Per-row activation counting keeps a ${m.p.prac_bits}-bit counter for every row. After each activation the bank reads it through a small IOSA, adds one and writes it back (PRHT, Kim et al., ISSCC 2023). DDR5 PRAC runs this counter update after PRECHARGE while the row finishes restoring, so tRP grows by the update time, tRAS can end right after sensing, and tRC grows only by what the restore cannot hide. ${on.prac_parts ? '' : `Here the update takes ${f2(DR.PRAC.acu_cycles)} column cycles, the ratio DDR5-3200 shows (21 ns over a 5 ns tCCD_L).`}</div>
       <div class="twrap"><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" class="tsvg">${out.join('\n')}</svg></div>
       <div class="twrap"><table class="tref"><thead><tr><th>ns</th><th>DDR5-3200AN</th><th>DDR5 PRAC</th><th>This design</th><th>This design, PRAC</th></tr></thead><tbody>
         <tr><td>tRCD</td><td>${f2(d5.default.trcd)}</td><td>${f2(d5.default.trcd)}</td><td>${f2(off.trcd)}</td><td>${f2(on.trcd)}</td></tr>

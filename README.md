@@ -701,6 +701,80 @@ With PRAC enabled, DDR5-3200 itself comes out at its Table 343 values: tRAS 16, 
 
 The **Timing** tab's **Row cycle (PRAC)** view draws one activation without and with PRAC: ACT, RD, PRE, the counter's IRD / +1 / IWR, the bitline precharge and the next ACT, with the DDR5 reference table. The metrics panel shows tRAS / tRP / tRC and, with PRAC on, the ACU and its cost against the same design without it. The extra refreshes PRHT issues to mitigate aggressors (counter reset + neighbour refresh) depend on the access pattern and are not modelled.
 
+### Structural OD-ECC and PRAC circuits (`odecc_model`, `prac_model`)
+
+The DDR5-ratio model above scales the counter update with the column cycle. The structural models instead build the update, and the OD-ECC engine it may have to go through, from circuits. Both are in the exporter and the JS port; JS matches Python to 3.5e-16 on 120 random designs (51 structural PRAC, 74 structural ECC). Every new option defaults off, and turned on in HBM3's configuration it reproduces DreamRAM exactly.
+
+```bash
+python3 tools/prac_study.py --dreamram /path/to/DreamRAM [--designs hbm3_baseline,hbm4_1sid_coupled,hbm5_2bg_min_area,g32_64b_fp5_lowpower]
+```
+
+**OD-ECC engine** (`odecc_model = 1`):
+- **Configuration:** a Reed-Solomon code with `odecc_cw` codewords per 32 B (272 data + metadata bits) over `odecc_sym`-bit symbols, each correcting `odecc_t` symbols.
+  - HBM3 (Ryu et al.) is 2 × RS(19,17) over 8-bit symbols.
+  - JESD270-4's example for HBM4 is one RS(19,17) over 16-bit symbols, a 304-bit codeword.
+- **Logic:** counted in 2-input-gate equivalents and logic levels:
+  - syndrome XOR trees;
+  - the check-bit generator;
+  - the error locator: for t = 1, compare S1 with αⁱ·S0 at every position; for t = 2, Peterson + Chien search + Forney;
+  - correction;
+  - DBI, in parallel.
+- **Calibration:** one logic level costs 1.6 FO4, so HBM3's engine is the staged model's 24 FO4. Its 7.4k gates fill DreamRAM's I/O control (1% of the baseline bank). Other engines scale I/O-control height by their gate count.
+- **Other choices:** the decoder can sit in each bank group's I/O control or in every bank (`odecc_where`), and can be split into `odecc_pipe` register stages. The check-bit share of the cells follows the code: 1/8 for t = 1 at 16 check bits per 128 data bits, 1/4 for t = 2.
+
+**PRAC counter update** (`prac_model = 1`): read the counter, check it, add one, re-encode it, equalise, write it back, then wait for the counter cells to restore. The column steps use the staged model's CSL/LDL/MDL/IOSA times. The restore is DreamRAM's tWR cell restore: 18.6 ns × the bitline capacitance ratio. Design decisions:
+- `prac_when`:
+  - after PRE (DDR5 PRAC: tRP grows);
+  - while the row is open (PRHT: tRAS grows);
+  - in a counter subarray (Chronus, Canpolat et al., HPCA 2025). The counters move to a short subarray at the column decoder with its own BLSA stripe, so they restore quickly and in parallel with the row.
+- `prac_path`: a per-bank counter path, or the bank group's shared I/O control. On a shared path, an all-bank PRECHARGE queues the group's other banks.
+- `prac_prot`:
+  - none;
+  - parity;
+  - its own SEC-DED code;
+  - inside the OD-ECC codeword. That means a full-codeword read, decode, re-encode and write, and it forces the shared path unless every bank has its own decoder.
+- Logic per counter path: counter IOSA + write driver per bit, incrementer (21 gates per 8 bits, after Chronus's decrementer), threshold comparator, and PRHT's count and three row-address latches. It's added to the I/O control.
+
+**What drives the cost** (HBM4 1 SID, coupled; HBM5 2 groups × 8 banks, smallest die):
+
+| Decision | HBM4 counter update | HBM4 tRP / tRC | HBM4 row-miss latency | HBM5 row-miss latency | Die |
+| --- | --- | --- | --- | --- | --- |
+| No PRAC | — | 18.0 / 45.0 ns | 63.7 ns | 82.5 ns | — |
+| DDR5 ratio (previous model) | 8.1 ns | 26.1 / 45.3 | +13% | +9% | +0.04% |
+| After PRE, per-bank path, no protection | 20.7 (restore 18.6) | 38.7 / 57.9 | **+33%** | **+41%** (restore 32.2) | +0.1% |
+| … while the row is open (PRHT) | 20.7 | 18.0 / 56.7 | +0% | +0% | +0.1% |
+| … counter subarray (Chronus) | 7.3 (restore 5.2) | 18.0 / 45.0 | +1% | +0% | +1.2% |
+| … shared I/O-control path | 65.2 (queue 40.8) | 83.2 / 102.4 | **+102%** | +86% | +0.05% |
+| … parity / own SEC-DED | 21.2 / 21.3 | 39.2 / 39.3 | +33 / 34% | +42% | +0.1–0.2% |
+| … inside OD-ECC codeword, bank-group decoder | 75.1 (queue 49.4) | 93.1 / 112.3 | **+118%** | +98% | +0.08% |
+| … inside OD-ECC codeword, per-bank decoders | 22.0 | 40.0 / 59.2 | +35% | +43% | +1.1% |
+| … inside the HBM4 16-bit-symbol codeword | 76.8 | 94.9 / 114.1 | +121% | +100% | +0.2% |
+
+- **The counter cells' write recovery dominates, and it does not scale with the column path.** HBM's column cycle is 2.5–6× DDR5's, but the counter still has to be written into cells and restored before the wordline closes. Built bottom-up, the update on HBM3 is 21.5 ns, essentially DDR5's 21 ns. The DDR5-ratio model gave 8.4 ns.
+- **Tall MATs make it worse.** The HBM5 design uses 1024-wordline MATs, so its bitlines restore in 32 ns instead of 18.6, and row-miss latency grows 41% with the simplest PRAC.
+- **Sharing is what multiplies it.** If counter traffic must use the bank group's I/O control, the worst case is an all-bank PRECHARGE that queues the group's other banks. In the 8-bank groups of HBM4/HBM5 that's 7 more updates: tRP 83–110 ns, row-miss latency about 2×. Two things force that path:
+  - IOSAs placed at the I/O control, as in HBM3's organisation, with no per-bank counter path;
+  - counters protected by an OD-ECC codeword that is only decoded per bank group.
+- **Protection itself is cheap.** Parity or a small SEC-DED adds 0.5–0.7 ns. Even the full codeword decode and re-encode adds only 1.2–1.5 ns when every bank has its own decoder, at +1–1.7% die. It's the location of the decoder that costs.
+- **Hiding the update costs either tRC or area.** PRHT's in-row update leaves latency alone but adds 11–19 ns to tRC. A Chronus counter subarray hides it entirely. This model charges it a dedicated BLSA stripe per bank, +1.2–1.6% die; Chronus reports < 0.1% with CACTI, which suggests sharing a neighbour's stripe.
+
+**OD-ECC at 32 Gb/s** (the bundled 64 B, 5%-footprint design, staged tCCD_L):
+
+| Engine | Gates | ECC stage | tCCD_L | Pin rate | Die |
+| --- | --- | --- | --- | --- | --- |
+| HBM3: 2 × RS(19,17), 8-bit symbols | 14.8k | 0.84 ns | 0.84 ns | 38.0 Gb/s | +0.1% |
+| HBM4 example: RS(19,17), 16-bit symbols | 26.5k | 1.01 | 1.01 | 31.7 | +0.2% |
+| 8-bit symbols, t = 2 | 43.8k | 2.86 | 2.86 | 11.2 | +8.0% |
+| 16-bit symbols, t = 2 | 85.5k | 3.76 | 3.76 | 8.5 | +8.6% |
+| 16-bit symbols, t = 2, 3 pipeline stages | 85.5k | 1.32 | 1.32 | 24.2 | +8.6% |
+| 16-bit symbols, per-bank decoders | 26.5k each | 1.01 | 1.01 | 31.7 | +2.5% |
+
+- **HBM4's 16-bit symbols cost about 20% of the ECC stage over HBM3's 8-bit symbols** (1.01 vs 0.84 ns). That alone drops this design just below 32 Gb/s.
+- **Correcting two symbols is out of reach inside tCCD_L.** Even pipelined in three stages it gives 24 Gb/s, and it doubles the check-bit cells (+8% die).
+- **Per-bank decoders don't relieve tCCD_L.** A bank's own accesses still arrive every tCCD_L. They only matter for keeping PRAC off the shared path.
+
+Not modelled: energy of the counter update; PRHT/RFM refresh traffic; the area of extra GBUS sets; a counter-restore boost (a stronger write driver or partial restore) that would shorten the dominant term.
+
 ## Drawing choices (not specified by DreamRAM)
 
 DreamRAM's model fixes the size of every block, but not always where each block sits. Where it does not, the viewer makes these choices:
@@ -738,5 +812,6 @@ tools/serve.py              no-cache local server
 tools/sweep_pin_rate.py     iso-capacity sweep for a target pin rate (runs DreamRAM via the exporter)
 tools/sweep_interface.py    HBM4 interface scaling 8-32 Gb/s and interface-breaking options at fixed capacity
 tools/build_designspace.py  builds js/designspace_data.js (64 B / 32 Gb/s designs) for the Design space tab
+tools/prac_study.py         PRAC and OD-ECC design-decision study on bundled designs
 configs/tech/*.json         DreamRAM tech configs for the HBM4 array and the 20 nm HBM2 cross-check
 ```

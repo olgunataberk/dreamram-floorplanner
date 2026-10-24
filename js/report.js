@@ -123,6 +123,27 @@
   <div class="rdies">${DIES.map(([name, sub, w, h, dims]) => `<figure class="rfig">${dieSvg(name, w, h)}<figcaption><b>${name}</b><span>${sub} · ${dims}</span></figcaption></figure>`).join('')}</div>
   <div class="rlegend"><span><i class="ldie"></i>die, to scale</span><span><i class="lfoot"></i>JEDEC HBM4 footprint, 14.175 × 10.975 mm</span></div>
 
+  <h2>PRAC and on-die ECC</h2>
+  <p>Per-row activation counting (PRAC) keeps a counter for every row and updates it after each activation: read it, add one, write it back. Modelled from circuits (<code>prac_model</code>, <code>odecc_model</code>; <code>tools/prac_study.py</code>), the update's cost depends mostly on where it runs and what it shares, not on the logic.</p>
+  <div class="rtbl"><table>
+    <thead><tr><th>Design decision</th><th>HBM4 counter update</th><th>HBM4 tRP / tRC</th><th>HBM4 row-miss latency</th><th>HBM5 row-miss latency</th></tr></thead>
+    <tbody>
+      <tr><td>No PRAC</td><td class="n">—</td><td class="n">18.0 / 45.0 ns</td><td class="n">63.7 ns</td><td class="n">82.5 ns</td></tr>
+      <tr><td>DDR5 ratio (4.2 column cycles)</td><td class="n">8.1 ns</td><td class="n">26.1 / 45.3</td><td class="n">+13%</td><td class="n">+9%</td></tr>
+      <tr class="pick"><td>After PRE, per-bank path, no protection</td><td class="n">20.7 (restore 18.6)</td><td class="n">38.7 / 57.9</td><td class="n">+33%</td><td class="n">+41%</td></tr>
+      <tr><td>While the row is open (PRHT)</td><td class="n">20.7</td><td class="n">18.0 / 56.7</td><td class="n">+0%</td><td class="n">+0%</td></tr>
+      <tr><td>Counter subarray (Chronus)</td><td class="n">7.3</td><td class="n">18.0 / 45.0</td><td class="n">+1%</td><td class="n">+0%</td></tr>
+      <tr><td>Shared I/O-control path</td><td class="n">65.2 (queue 40.8)</td><td class="n">83.2 / 102.4</td><td class="n">+102%</td><td class="n">+86%</td></tr>
+      <tr><td>Inside the OD-ECC codeword, bank-group decoder</td><td class="n">75.1</td><td class="n">93.1 / 112.3</td><td class="n">+118%</td><td class="n">+98%</td></tr>
+      <tr><td>Inside the OD-ECC codeword, per-bank decoders</td><td class="n">22.0</td><td class="n">40.0 / 59.2</td><td class="n">+35%</td><td class="n">+43%</td></tr>
+    </tbody></table></div>
+  <ul>
+    <li><b>The counter cells' write recovery sets the floor.</b> It takes 18.6 ns on HBM4 and 32 ns on the HBM5 design's 1024-wordline MATs, and it doesn't speed up with HBM's faster column path. So even the simplest PRAC costs HBM about what it costs DDR5.</li>
+    <li><b>Sharing multiplies it.</b> If the counter has to go through the bank group's I/O control, because the sense amps or the only OD-ECC decoder sit there, an all-bank precharge queues the group's other 7 banks and row-miss latency roughly doubles.</li>
+    <li><b>Protection and logic are cheap; their location is not.</b> Parity or SEC-DED adds under 1 ns; a full codeword decode with per-bank decoders, about 1.3 ns at +1–1.7% die.</li>
+    <li><b>HBM4's 16-bit ECC symbols lengthen the ECC stage by about 20% over HBM3's 8-bit symbols.</b> Correcting two symbols triples it, which no 32 Gb/s design can absorb inside tCCD_L.</li>
+  </ul>
+
   <h2>How far to trust this</h2>
   <ul>
     <li>One number is fitted: a gate delay of 43 ps at 16 nm, set so HBM3 cycles at 2 ns. The 24-gate-delay OD-ECC + DBI step, which sets the 19 Gb/s ceiling, is an assumption. Below about 18 gate delays (0.62 ns) the bank cycle becomes the limit instead, and the ceiling still stays below 30 Gb/s.</li>
