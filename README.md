@@ -27,7 +27,7 @@ Then open <http://localhost:8813/>. You can also open `index.html` directly from
 | Column-read wave diagram | The **Timing** tab (see [below](#timing-tab)) |
 | HBM4 8 → 32 Gb/s study | The **Report** tab: the interface-scaling results, with buttons that open the bundled designs |
 | 64 B design space at 32 Gb/s | The **Design space** tab: every passing design by power, area, cell efficiency and fault coverage, and the ones within the JEDEC footprint |
-| PRAC study | The **PRAC** tab: what each per-row activation counting decision costs in row-miss penalty, on bundled designs and HBM5 |
+| PRAC study | The **PRAC** tab: what each per-row activation counting decision costs in row-miss penalty, on bundled designs and HBM5, with a schematic of where each configuration puts the counters, the PRAC unit and the OD-ECC decoder within a bank group |
 
 Each level dims everything outside the focused component. Drawing switches automatically between level-of-detail stages, so the whole die (~100k MATs) stays responsive.
 

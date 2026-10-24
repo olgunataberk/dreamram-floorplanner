@@ -316,3 +316,19 @@ body.tab-report #cv, body.tab-report .hint, body.tab-report #tip, body.tab-repor
 .dsval { fill: var(--dim); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .prlegend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--dim); margin: 6px 4px 2px; }
 .prlegend i { display: inline-block; width: 12px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+
+/* PRAC tab: circuit placement schematics */
+.pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 12px; margin-top: 10px; }
+.pcard { margin: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px 10px; min-width: 0; }
+.pfig { display: block; width: 100%; height: auto; }
+.pcard figcaption { font-size: 12px; line-height: 1.45; margin-top: 4px; display: grid; gap: 3px; }
+.pcard figcaption span { color: var(--dim); }
+.pcost { font-size: 11.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.pcost b { color: var(--text); }
+.pfig .plabel { font-size: 10.5px; fill: var(--text); }
+.pfig .pdark { fill: #1d2330; font-weight: 600; }
+.pfig .plight { fill: #fff; font-weight: 600; }
+.pfig .psmall { font-size: 10px; fill: var(--dim); }
+.pfig .pwhen { fill: var(--accent); font-weight: 600; }
+.pfig .parrow { stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 3 2; }
+.parrowkey { display: inline-block; width: 18px; height: 0; border-top: 2px dashed var(--accent); vertical-align: middle; margin-right: 6px; }

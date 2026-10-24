@@ -48,6 +48,87 @@
     return `${s}<div class="prlegend">${legend}<span class="rnote">time (ns)</span></div>`;
   }
 
+  // ---- Where the PRAC circuits sit: one schematic bank group per configuration ----
+  // cells: counter storage ('none' | 'row' in-row columns | 'sub' counter subarray | 'ecc' inside the ECC columns);
+  // unit: PRAC unit (counter IOSA / write driver, incrementer, compare, latches) 'bank' or 'bg' (in the I/O control);
+  // dec: OD-ECC decoder 'bg' or 'bank'; when: when the update runs; prot: counter protection tag
+  const LAYOUTS = [
+    { match: 'Off', title: 'No PRAC', cells: 'none', unit: null, dec: 'bg', when: null, note: 'Reference: banks, their column decoders facing the bank group\'s I/O control, and the OD-ECC decoder in the I/O control.' },
+    { match: 'Base', title: 'After PRE, per-bank path (DDR5 PRAC)', cells: 'row', unit: 'bank', dec: 'bg', when: 'after PRE', note: 'Counter columns in every row; each bank reads, increments and writes its counter through its own small counter path after PRECHARGE.' },
+    { match: 'While the row is open', title: 'While the row is open (PRHT)', cells: 'row', unit: 'bank', dec: 'bg', when: 'row open', note: 'Same circuits; the internal read and write run between ACT and PRE, so tRAS grows instead of tRP.' },
+    { match: 'Counter subarray', title: 'Counter subarray (Chronus)', cells: 'sub', unit: 'bank', dec: 'bg', when: 'concurrent', note: 'Counters move to a short subarray with its own sense amps at the column decoder, updated alongside the data row.' },
+    { match: 'Shared I/O-control path', title: 'Shared I/O-control path', cells: 'row', unit: 'bg', dec: 'bg', when: 'after PRE', shared: true, note: 'One PRAC unit per bank group in the I/O control; every bank\'s counter travels over its MDLs to it, so an all-bank PRECHARGE queues the other banks.' },
+    { match: 'Own SEC-DED', title: 'Counter with its own SEC-DED (or parity)', cells: 'row', unit: 'bank', dec: 'bg', when: 'after PRE', prot: 'SEC-DED', note: 'As the per-bank base, with check bits beside the counter and a small encoder / decoder in each bank\'s PRAC unit.' },
+    { match: 'Inside OD-ECC codeword, bank-group', title: 'Inside the OD-ECC codeword, bank-group decoder', cells: 'ecc', unit: 'bg', dec: 'bg', when: 'after PRE', shared: true, note: 'The counter is a symbol of an OD-ECC codeword; the only decoder is the bank group\'s, so the whole codeword goes to the I/O control and back, queueing behind the other banks.' },
+    { match: 'Inside OD-ECC codeword, per-bank', title: 'Inside the OD-ECC codeword, per-bank decoders', cells: 'ecc', unit: 'bank', dec: 'bank', when: 'after PRE', note: 'Every bank gets its own OD-ECC decoder and PRAC unit, so the codeword read-modify-write stays in the bank.' },
+  ];
+
+  function placementSvg(L, P) {
+    const W = 300, H = 254, x0 = 40, bw = 200, bh = 34, cd = 6, gap = 4, ioH = 30;
+    const yTop = 22, yIo = yTop + 2 * (bh + gap) + 6, yBot = yIo + ioH + 6;
+    const ecc = 14, rh = 4, sub = 6, unitW = 26;
+    const out = [];
+    const rect = (x, y, w, h, fill, title, extra = '') => out.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" ${extra}><title>${esc(title)}</title></rect>`);
+    const text = (x, y, t, cls = 'plabel', anchor = 'start') => out.push(`<text x="${x}" y="${y}" class="${cls}" text-anchor="${anchor}">${esc(t)}</text>`);
+    const arrow = (xa, ya, xb, yb) => out.push(`<line x1="${xa}" y1="${ya}" x2="${xb}" y2="${yb}" class="parrow" marker-end="url(#pah)"/>`);
+    out.push(`<defs><marker id="pah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="${P.path}"/></marker></defs>`);
+    // I/O control with the bank group's OD-ECC decoder (and a shared PRAC unit) and the BG-BUS leaving it
+    rect(x0, yIo, bw, ioH, P.ioctl, 'Bank group I/O control (IOSA / WD, OD-ECC + DBI, BG-BUS drivers)', 'rx="3"');
+    text(x0 + 6, yIo + ioH / 2 + 4, 'I/O control', 'plabel pdark');
+    if (L.dec === 'bg') { rect(x0 + 88, yIo + 5, 46, ioH - 10, P.eccOd, 'OD-ECC decoder + DBI, shared by the bank group', 'rx="2"'); text(x0 + 111, yIo + ioH / 2 + 4, 'OD-ECC', 'plabel plight', 'middle'); }
+    if (L.unit === 'bg') { rect(x0 + 140, yIo + 5, 54, ioH - 10, P.accent, 'PRAC unit for the whole bank group: counter IOSA / write driver, incrementer, compare, latches', 'rx="2"'); text(x0 + 167, yIo + ioH / 2 + 4, 'PRAC', 'plabel pdark', 'middle'); }
+    out.push(`<line x1="${x0 + bw}" y1="${yIo + ioH / 2}" x2="${W - 8}" y2="${yIo + ioH / 2}" stroke="${P.bgbus}" stroke-width="3"/>`);
+    text(W - 10, yIo + ioH / 2 - 6, 'BG-BUS', 'plabel', 'end');
+    // banks: two drawn on each side of the I/O control, column decoders facing it
+    const banks = [[yTop, 'down'], [yTop + bh + gap, 'down'], [yBot, 'up'], [yBot + bh + gap, 'up']];
+    banks.forEach(([y, face], i) => {
+      const near = face === 'down' ? y + bh - cd : y; // column decoder edge, toward the I/O control
+      const arrY = face === 'down' ? y : y + cd, arrH = bh - cd - (L.cells === 'sub' ? sub : 0);
+      const arrY2 = face === 'down' ? arrY : arrY + (L.cells === 'sub' ? sub : 0);
+      rect(x0, arrY2, bw - ecc - (L.cells === 'row' ? rh : 0), arrH, P.mat, 'Data cells');
+      rect(x0 + bw - ecc - (L.cells === 'row' ? rh : 0), arrY2, ecc, arrH, P.eccmat, 'MD-ECC + OD-ECC check-bit columns');
+      if (L.cells === 'row') rect(x0 + bw - rh, arrY2, rh, arrH, P.rhcells, `Counter cells: ${L.prot ? 'counter + ' + L.prot + ' bits' : 'one counter'} per row, in extra columns`);
+      if (L.cells === 'ecc') rect(x0 + bw - ecc + 3, arrY2 + 2, ecc - 6, arrH - 4, P.rhcells, 'Counter stored as a symbol inside an OD-ECC codeword (in the ECC columns)');
+      if (L.cells === 'sub') rect(x0, face === 'down' ? near - sub : near + cd, bw, sub, P.rhcells, 'Counter subarray: short rows holding every row\'s counter, with their own sense amps');
+      rect(x0, near, bw, cd, P.coldec, 'Column decoder');
+      let unitX = x0 + bw - unitW - 2;
+      if (L.unit === 'bank') {
+        const uy = face === 'down' ? near - 1 : near - 1;
+        rect(unitX, uy, unitW, cd + 2, P.accent, `PRAC unit for this bank: counter IOSA / write driver, incrementer, compare, latches${L.prot ? ', ' + L.prot + ' encode / decode' : ''}`, 'rx="1.5"');
+      }
+      if (L.dec === 'bank') rect(x0 + bw - 2 * unitW - 6, near - 1, unitW, cd + 2, P.eccOd, 'OD-ECC decoder for this bank', 'rx="1.5"');
+      // the counter update's path
+      if (L.cells !== 'none') {
+        const cx = L.cells === 'sub' ? x0 + bw - unitW / 2 - 2 : L.cells === 'ecc' ? x0 + bw - ecc / 2 : x0 + bw - rh / 2;
+        const cy = face === 'down' ? (L.cells === 'sub' ? near - sub / 2 : arrY2 + arrH / 2) : (L.cells === 'sub' ? near + cd + sub / 2 : arrY2 + arrH / 2);
+        if (L.unit === 'bank') arrow(cx, cy, unitX + unitW / 2, face === 'down' ? near : near + cd);
+        else if (i === 1 || i === 2) arrow(cx, cy, x0 + 167, face === 'down' ? yIo + 5 : yIo + ioH - 5);
+        else arrow(cx, cy, x0 + bw + 6, face === 'down' ? yIo - 2 : yIo + ioH + 2);
+      }
+      text(x0 - 6, y + bh / 2 + 4, `B${i < 2 ? i : i + 2}`, 'plabel', 'end');
+    });
+    text(x0 - 6, yIo + ioH / 2 + 4, '⋮', 'plabel', 'end');
+    text(x0, H - 22, '8 banks per group; 2 drawn on each side', 'psmall');
+    if (L.when) text(x0, H - 8, `Update: ${L.when}${L.shared ? ' · all-bank PRE queues banks' : ''}`, 'psmall pwhen');
+    return `<svg viewBox="0 0 ${W} ${H}" class="pfig" role="img" aria-label="${esc(L.title)}">${out.join('')}</svg>`;
+  }
+
+  function placementSection(D, P) {
+    const d = D.designs[state.design], off = d.off;
+    const cards = LAYOUTS.map((L) => {
+      const r = d.prac.find((x) => x.label.startsWith(L.match) || x.label.includes(L.match));
+      const cost = r && !r.discarded && L.match !== 'Off'
+        ? `<div class="pcost">penalty <b>${pct(pen(r), pen(off))}</b> · tRC ${f(off.trc)} → ${f(r.trc)} ns · die ${pct(r.die, off.die, 1)}</div>`
+        : `<div class="pcost">penalty ${f(pen(off))} ns · tRC ${f(off.trc)} ns</div>`;
+      return `<figure class="pcard">${placementSvg(L, P)}<figcaption><b>${esc(L.title)}</b>${cost}<span>${esc(L.note)}</span></figcaption></figure>`;
+    }).join('');
+    const sw = (c, l) => `<span><i style="background:${c}"></i>${esc(l)}</span>`;
+    return `<h2>Where the PRAC circuits sit</h2>
+      <p>One bank group in DreamRAM's layout: banks on both sides of the group's I/O control, their column decoders facing it, the BG-BUS leaving it. Costs below each figure are for the design selected above (${esc(NAMES[d.name] || d.name)}).</p>
+      <div class="prlegend">${sw(P.mat, 'Data cells')}${sw(P.eccmat, 'ECC check-bit columns')}${sw(P.rhcells, 'Counter cells')}${sw(P.coldec, 'Column decoder')}${sw(P.ioctl, 'I/O control')}${sw(P.eccOd, 'OD-ECC decoder')}${sw(P.accent, 'PRAC unit (counter IOSA / WD, incrementer, latches)')}<span><i class="parrowkey"></i>Counter update path</span></div>
+      <div class="pgrid">${cards}</div>`;
+  }
+
   function designSection(D, colors) {
     const d = D.designs[state.design], off = d.off;
     const rows = d.prac.map((r) => r.discarded ? `<tr><td>${esc(r.label)}</td><td colspan="6">discarded</td></tr>`
@@ -145,6 +226,7 @@
       <p>The same options are in Parameters → Extensions, and the Timing tab's Row cycle view draws each part of the update for the current design.</p>
 
       ${designSection(D, colors)}
+      ${placementSection(D, P)}
       ${hbm5Section(D)}
 
       <h2>Reproduce</h2>
