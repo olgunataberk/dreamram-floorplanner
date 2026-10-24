@@ -799,8 +799,10 @@
     g32_2bg_staged_bank: '32G · staged, per-bank IOSA · 2 BGs × 8 banks, 64 B access, 4 TSVs / DQ · 14.3 × 10.5 mm · 32.2 Gb/s',
     hbm4if_8g_mid: '8 Gb/s · smallest die · mid-bank decoder, 16 × 512-BL MATs · 8.6 × 14.6 mm · 125.6 mm²',
     hbm4if_8g_bank: '8 Gb/s · 2nd smallest · coupled ×2, 2 channel rows · 7.2 × 17.8 mm · 127.0 mm²',
+    hbm4if_8g_pkg: '8 Gb/s · fits HBM4 footprint · 64 × 512-BL MATs, coupled ×4, 2 channel rows · 14.0 × 10.9 mm · 153.5 mm²',
     hbm4if_16g_bank: '16 Gb/s · smallest die · coupled ×2, 32 MDLs, 2 channel rows · 7.2 × 18.6 mm · 132.7 mm²',
     hbm4if_16g_mid: '16 Gb/s · 2nd smallest · mid-bank decoder, 16 MDLs · 8.6 × 15.5 mm · 133.8 mm²',
+    hbm4if_16g_pkg: '16 Gb/s · closest to HBM4 footprint · BRVSA, mid-bank decoder · 14.3 × 10.4 mm · 148.3 mm²',
   };
   exSel.innerHTML = '<option value="">Example designs…</option>'
     + '<optgroup label="DreamRAM exports">' + Object.keys(EX).filter((k) => !k.startsWith('hbm5_') && !k.startsWith('g32_') && !k.startsWith('hbm4if_')).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'

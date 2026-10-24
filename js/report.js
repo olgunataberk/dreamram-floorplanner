@@ -11,7 +11,8 @@
     ['4 PCs × 16 DQ, 4 groups', 'two channel rows', 14.30, 11.05, '158.0 mm², 1.29 : 1'],
     ['64 B, 4 groups', 'one channel row', 14.30, 11.22, '160.5 mm², 1.27 : 1'],
     ['32 B, 4 groups, near-square', 'two channel rows', 13.24, 12.62, '167.1 mm², 1.05 : 1'],
-    ['HBM4 interface, 16 Gb/s', 'two channel rows', 13.24, 11.90, '157.5 mm², 1.11 : 1'],
+    ['HBM4 interface, 8 Gb/s', 'footprint preset, two channel rows', 14.04, 10.93, '153.5 mm², 1.28 : 1'],
+    ['HBM4 interface, 16 Gb/s', 'footprint preset, one channel row', 14.30, 10.37, '148.3 mm², 1.38 : 1'],
   ];
 
   function dieSvg(name, w, h) {
@@ -83,8 +84,8 @@
     <li><b>16 Gb/s costs about 4% more die than 8 Gb/s</b>, for twice the TSVs. It needs a 4 GHz clock and 2–4 GBUS copies instead of 1–2. Its tCCD_L is 0.84 ns against the 1.00 ns allowed. With the IOSA at the I/O control it fails at 10.6 Gb/s.</li>
   </ul>
 
-  <h3>Smallest designs, bundled</h3>
-  <p>The two smallest distinct organisations at each rate, under <b>Example designs → HBM4 interface scaling</b>. All keep the HBM4 interface and need an IOSA in every bank.</p>
+  <h3>Bundled designs</h3>
+  <p>The two smallest distinct organisations at each rate, plus the best fit to the HBM4 footprint, under <b>Example designs → HBM4 interface scaling</b>. All keep the HBM4 interface and need an IOSA in every bank.</p>
   <div class="rtbl"><table>
     <thead><tr><th>Design</th><th>Organisation</th><th>tCCD_L</th><th>Die</th><th>Latency</th><th></th></tr></thead>
     <tbody>
@@ -92,7 +93,10 @@
       <tr><td class="n">8 Gb/s</td><td>8 × 1024-WL subarrays, 16 × 1024-BL MATs coupled ×2, 16 MDLs, two channel rows</td><td class="n">1.88 / 2.00 ns</td><td class="n">7.15 × 17.77 = 127.0 mm²</td><td class="n">115 ns</td><td>${load('hbm4if_8g_bank', 'Open')}</td></tr>
       <tr><td class="n">16 Gb/s</td><td>8 × 1024-WL subarrays, 16 × 1024-BL MATs coupled ×2, 32 MDLs, two channel rows</td><td class="n">0.94 / 1.00 ns</td><td class="n">7.15 × 18.55 = 132.7 mm²</td><td class="n">119 ns</td><td>${load('hbm4if_16g_bank', 'Open')}</td></tr>
       <tr><td class="n">16 Gb/s</td><td>16 × 1024-WL subarrays, 16 × 512-BL MATs, 16 MDLs, mid-bank decoder</td><td class="n">0.84 / 1.00 ns</td><td class="n">8.62 × 15.53 = 133.8 mm²</td><td class="n">126 ns</td><td>${load('hbm4if_16g_mid', 'Open')}</td></tr>
+      <tr class="pick"><td class="n">8 Gb/s, footprint</td><td>8 × 512-WL subarrays, 64 × 512-BL MATs coupled ×4, 8 MDLs, two channel rows</td><td class="n">1.68 / 2.00 ns</td><td class="n">14.04 × 10.93 = 153.5 mm²</td><td class="n">97 ns</td><td>${load('hbm4if_8g_pkg', 'Open')}</td></tr>
+      <tr class="pick"><td class="n">16 Gb/s, footprint</td><td>16 × 512-WL subarrays, 16 × 1024-BL MATs coupled ×2, 32 MDLs, BRVSA, mid-bank decoder</td><td class="n">0.84 / 1.00 ns</td><td class="n">14.30 × 10.37 = 148.3 mm²</td><td class="n">63 ns</td><td>${load('hbm4if_16g_pkg', 'Open')}</td></tr>
     </tbody></table></div>
+  <p class="rnote">The two footprint presets trade area for shape. At 8 Gb/s the die fits inside the JEDEC HBM4 footprint (14.175 × 10.975 mm) at 1.28 : 1. At 16 Gb/s no swept design fits; the closest is 0.9% too wide. Against the modeled Samsung 12-high die (8.62 × 14.72 mm), the 8 Gb/s smallest preset already fits, and the 16 Gb/s 2nd-smallest is the closest (5.5% too tall).</p>
 
   <h2>Breaking the interface at 32 Gb/s</h2>
   <p>Each option keeps capacity and total DQs. Picks shown are the smallest die with an aspect ratio of 1.3 or less, preferring designs that pass under all three IOSA placements.</p>

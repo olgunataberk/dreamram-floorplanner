@@ -613,6 +613,12 @@ Reported but not used to filter:
 | Die | 8.62 × 14.58 = 125.6 mm² | 7.15 × 17.77 = 127.0 | 7.15 × 18.55 = 132.7 | 8.62 × 15.53 = 133.8 |
 | Row-miss latency | 100 ns | 115 | 119 | 126 |
 
+Two more presets trade area for a package-friendly shape, picked as the die that best fits the JEDEC HBM4 footprint (14.175 × 10.975 mm):
+- **8 Gb/s, fits the HBM4 footprint:** 8 × 512-WL subarrays, 64 × 512-BL MATs coupled ×4, 8 MDLs, two channel rows. 14.04 × 10.93 mm = 153.5 mm² (1.28 : 1), tCCD_L 1.68 / 2.00 ns, 97 ns.
+- **16 Gb/s, closest to the footprint** (nothing in the sweep fits): 16 × 512-WL subarrays, 16 × 1024-BL MATs coupled ×2, 32 MDLs, BRVSA, mid-bank decoder. 14.30 × 10.37 mm = 148.3 mm², 0.9% too wide; tCCD_L 0.84 / 1.00 ns, 63 ns.
+
+Against the modeled Samsung 12-high die (8.62 × 14.72 mm), the 8 Gb/s smallest preset already fits, and the 16 Gb/s 2nd-smallest is the closest (5.5% too tall).
+
 **Package friendliness.** The sweep also places a die's channels in one row (DreamRAM) or two (`channel_rows`, as in Samsung's HBM4). It reports each die's aspect ratio (long side / short side; the JEDEC HBM4 footprint is 1.29), the squarest passing die within `--area-slack` (10%) of the smallest, and drops dies above `--max-aspect`. The smallest passing dies are long and thin, up to 2.8 : 1. Picking the channel and bank-group arrangement for shape costs about 10–20% area. At 32 Gb/s with aspect ≤ 1.3, the designs that pass under every IOSA placement are:
 - 4 PCs × 16 DQ with 4 groups: 158.0 mm², 14.30 × 11.05 mm, 85 ns;
 - 64 B with 4 groups: 160.5 mm², 14.30 × 11.22 mm, 142 ns.
