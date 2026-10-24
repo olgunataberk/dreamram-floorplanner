@@ -90,14 +90,15 @@ def tsv_split(gbus_bits, dq_pc, rate, tsv_max):
     return best
 
 
-def evaluate(a, opt, d, model, rate):
+def evaluate(a, opt, d, model, rate, extra=None):
+    """One design under one column-cycle model at one pin rate; extra adds model overrides (e.g. PRAC)."""
     pch, access, bgs, _, _ = OPTIONS[opt]
     dq_pc = DQ_CH // pch
     gbus_bits = d['mats'] * d['ldls_mdls'] / d['coupled_rows']
     sd = tsv_split(gbus_bits, dq_pc, rate, a.tsv_rate)
     if sd is None:
         return None
-    p = dict(FIXED, **{k: v for k, v in d.items() if k != 'mdlcsl'}, **MODELS[model][1], pch=pch,
+    p = dict(FIXED, **{k: v for k, v in d.items() if k != 'mdlcsl'}, **dict(MODELS[model][1], **(extra or {})), pch=pch,
              mdl_over_mat=d['mdlcsl'] & 1, csl_mdl_over_mat=d['mdlcsl'] >> 1, bgbuses_per_gbus=bgs,
              gbus_tsv_sd=sd, tsv_dq_sd=gbus_bits / (dq_pc * sd))
     try:
@@ -122,6 +123,9 @@ def evaluate(a, opt, d, model, rate):
     spm = d['ldls_mdls'] / 8
     fault_t = int(dram.od_ecc_prop * access / 8 / 2 // 2)
     fault_hits = 1 if spm <= 1 else int(spm)
+    if p.get('odecc_model'):  # structural engine: 2 x ldls_mdls bits over the access's codewords (js/floorplan.js)
+        e = dram.ecc()
+        fault_t, fault_hits = p.get('odecc_t', 1), -(-2 * d['ldls_mdls'] // (p.get('odecc_sym', 8) * e['ncw']))
     return dict(option=opt, model=model, rate=rate, **{k: d[k] for k in d}, bgs=bgs, banks_pc=bgs * d['banks'], pch=pch,
                 dq_pc=dq_pc, access=access, pumps=pumps, tccdl=tccdl, tccdl_need=bgs * tb, rmax=rmax,
                 limiter='bank cycle' if pumps * bank >= shared else SW.STAGE_NAMES[max(sh, key=sh.get)],
@@ -129,7 +133,8 @@ def evaluate(a, opt, d, model, rate):
                 gbus_sets=f'{math.ceil(1.0 * fo4 / tb - 1e-9)}-{math.ceil(2.0 * fo4 / tb - 1e-9)}',
                 ck_ghz=rate / 4, ca_use=pch / (tb * rate / 4),
                 die_w=die_w / 1000, die_h=die_h / 1000, die=die_w * die_h / 1e6, aspect=max(die_w, die_h) / min(die_w, die_h), tsv_mm2=die_w * (cmd_y + data_y + other_y) / 1e6,
-                latency=m['worst_latency_ns'], e_closed=e_closed, cell_eff=m['cell_eff'], fault_hits=fault_hits, fault_t=fault_t, power=e_closed * 1e-12 * DQ_CH * CHANNELS * rate * 1e9)
+                latency=m['worst_latency_ns'], trcd=m['trcd'], tras=m['tras'], trp=m['trp'], trc=m['trc'],
+                acu=dram.acu_time(tech) if p.get('prac') else 0.0, e_closed=e_closed, cell_eff=m['cell_eff'], fault_hits=fault_hits, fault_t=fault_t, power=e_closed * 1e-12 * DQ_CH * CHANNELS * rate * 1e9)
 
 
 def org(r):

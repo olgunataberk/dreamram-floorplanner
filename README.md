@@ -775,6 +775,58 @@ python3 tools/prac_study.py --dreamram /path/to/DreamRAM [--designs hbm3_baselin
 
 Not modelled: energy of the counter update; PRHT/RFM refresh traffic; the area of extra GBUS sets; a counter-restore boost (a stronger write driver or partial restore) that would shorten the dominant term.
 
+### HBM5 with 2× channels per die: PRAC and row-miss latency
+
+```bash
+python3 tools/hbm5_study.py --dreamram /path/to/DreamRAM [--rates 8,16] [--ecc-sym 16] [--ecc-pipe 1]
+```
+
+This study keeps HBM4's capacity (16 GB, four 32 Gb dies, 1 SID) and its pseudo-channel organisation: 32 DQs, 32 B accesses (BL8), 2 bank groups × 8 banks, 1 KiB rows. It doubles the channels per die to 16, so 4,096 data DQs and half the rows per bank. On-die ECC is HBM4-like: one RS(19,17) over 16-bit symbols per 32 B, decoded per bank group.
+
+Every die organisation from `tools/sweep_interface.py` is timed with the staged model under three I/O sense-amp placements, with TSVs at ≤ 8 Gb/s and both die sides ≤ 20 mm. For the smallest, the package-friendly (≤ 1.3 : 1) and the lowest-latency passing designs, the script compares PRAC configurations. HBM4 itself (8 channels per die) runs the same way as the reference.
+
+**8 Gb/s:** all three placements pass. The package-friendly design is the same organisation for each: 2 × 8 banks, 8 × 512-WL subarrays, 16 × 1024-BL MATs coupled ×2, 32 MDLs, two channel rows.
+
+| | HBM4 (8 ch / die) | HBM5 (16 ch / die) |
+| --- | --- | --- |
+| Passing designs (I/O-control IOSA / per bank / mid-bank decoder) | 21 / 169 / 185 | 32 / 98 / 98 |
+| Package-friendly die | 13.24 × 11.56 = 153.0 mm² | 14.30 × 12.26 = 175.3 mm² (+15%) |
+| Row-miss latency, no PRAC | 88.0 ns | 99.8 ns |
+
+PRAC on the HBM5 package-friendly design, with IOSAs at the I/O control as in HBM4:
+
+| PRAC | Counter update | tRAS / tRP / tRC | Row-miss latency | Die |
+| --- | --- | --- | --- | --- |
+| No PRAC | — | 26.8 / 17.8 / 44.7 ns | 99.8 ns | 175.3 mm² |
+| DDR5 ratio | 6.7 ns | 20.1 / 24.6 / 44.7 | 106.5 (+7%) | +0.0% |
+| After PRE, per-bank counter path | 20.4 | 19.0 / 38.2 / 57.2 | 120.2 (+20%) | +0.2% |
+| While the row is open (PRHT) | 20.4 | 38.2 / 17.8 / 56.0 | 99.8 (+0%) | +0.2% |
+| Counter subarray (Chronus) | 6.9 | 26.8 / 17.8 / 44.7 | 101.1 (+1%) | +2.2% |
+| After PRE, shared I/O-control path | 43.6 | 19.0 / 61.4 / 80.4 | 143.3 (+44%) | +0.1% |
+| Inside the OD-ECC codeword, bank-group decoder | 55.3 | 19.0 / 73.1 / 92.1 | 155.1 (+55%) | +0.2% |
+| Inside the OD-ECC codeword, per-bank decoders | 21.8 | 19.0 / 39.7 / 58.7 | 123.7 (+24%) | +3.3% |
+
+HBM4's package-friendly design shows the same pattern: +23% after PRE, +50% on a shared path, +63% inside a bank-group-decoded codeword.
+
+**16 Gb/s:**
+- **Nothing passes with HBM4's ECC as is.** The 16-bit-symbol decode takes 1.01 ns at this node, more than the 1.0 ns each bank group has per access (two groups × 0.5 ns bursts). Every design tops out at 15.8 Gb/s, HBM4 and HBM5 alike.
+- **Two fixes work.** Split the ECC into two pipeline stages, or use HBM3's 8-bit symbols (0.84 ns). Then 71 (per-bank IOSA) and 91 (mid-bank decoder) HBM5 designs pass.
+- **IOSAs at the I/O control never pass** (≤ 10.8 Gb/s): the bank cycle itself is too slow.
+
+The HBM5 package-friendly design is the same organisation at 14.30 × 12.91 mm = 184.7 mm², with twice the TSVs. With a two-stage ECC and an IOSA per bank, row-miss latency is 80.4 ns without PRAC:
+- +25% after PRE on a per-bank path;
+- +0% while the row is open, with tRC 44.7 → 56.0 ns;
+- +1% with a counter subarray, at +2.1% die;
+- +54% on a shared path;
+- +69% inside a bank-group-decoded codeword;
+- +29% with per-bank decoders.
+
+What carries over from the PRAC study:
+- **The 18.6 ns counter-cell restore sets the floor.** The update can't be shorter than about 20 ns unless it moves to a counter subarray.
+- **The cost is mostly about sharing.** Any decision that routes counters through the bank group's I/O control turns an all-bank precharge into seven queued updates.
+
+Row-miss latencies are not comparable across rates for the same organisation (99.8 ns at 8 Gb/s, 80.4 at 16). DreamRAM's tCL grows with the TSV serialisation, and the 16 Gb/s designs use twice the TSVs.
+
 ## Drawing choices (not specified by DreamRAM)
 
 DreamRAM's model fixes the size of every block, but not always where each block sits. Where it does not, the viewer makes these choices:
@@ -813,5 +865,6 @@ tools/sweep_pin_rate.py     iso-capacity sweep for a target pin rate (runs Dream
 tools/sweep_interface.py    HBM4 interface scaling 8-32 Gb/s and interface-breaking options at fixed capacity
 tools/build_designspace.py  builds js/designspace_data.js (64 B / 32 Gb/s designs) for the Design space tab
 tools/prac_study.py         PRAC and OD-ECC design-decision study on bundled designs
+tools/hbm5_study.py         HBM5 (2x channels per die) search at 8 / 16 Gb/s with PRAC configurations
 configs/tech/*.json         DreamRAM tech configs for the HBM4 array and the 20 nm HBM2 cross-check
 ```
