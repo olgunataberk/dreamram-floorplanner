@@ -173,6 +173,7 @@
       <ul>
         <li><b>No design fits exactly.</b> ${nearTxt}: eight channels × two pseudo-channels of banks side by side. DreamRAM's own model of today's HBM4 die is 15.10 mm wide, 6.5% over, so a 1% allowance is well inside the model's error.</li>
         <li><b>Within 1%, every design is 14.30 mm wide and 1.33–1.37 : 1</b>, slightly longer than the footprint's 1.29. None of them corrects a driver fault: they all use 64 MDLs per MAT. The 5% allowance adds dies 11.21 mm tall at 1.28 : 1.</li>
+        <li><b>The lowest-power design within 5% is bundled:</b> 1 × 2 bank groups of 8 banks, 16 × 512-WL subarrays, 16 × 1024-BL MATs coupled ×2, 64 MDLs, two channel rows and a mid-bank column decoder. 14.30 × 11.21 mm (1.28 : 1), 107 W, 74 ns row-miss latency, tCCD_L 0.84 ns. It doesn't correct a driver fault. <button class="rload" data-load="ex:g32_64b_fp5_lowpower">Open</button></li>
       </ul>
       <p class="rnote">Model: DreamRAM with the viewer's staged tCCD_L (tools/sweep_interface.py, option a64; data from tools/build_designspace.py). A design passes when tCCD_L ≤ 1 ns (two bank groups × the 0.5 ns burst), every TSV runs at ≤ ${DS.tsv_rate} Gb/s, and both die sides stay under 20 mm. Worst-case power is DreamRAM's: closed-row energy per bit × 8.2 TB/s.</p>
     </article>`;

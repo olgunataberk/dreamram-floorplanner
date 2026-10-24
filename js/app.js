@@ -737,13 +737,15 @@
   }
   document.querySelectorAll('.tabs [data-tab]').forEach((b) => (b.onclick = () => setTab(b.dataset.tab)));
   // Report buttons open a bundled design in the floorplan (exSel is defined further down; clicks come later)
-  $('report').addEventListener('click', (e) => {
+  const openPreset = (e) => {
     const b = e.target.closest('[data-load]');
     if (!b) return;
     exSel.value = b.dataset.load;
     exSel.onchange();
     setTab('floorplan');
-  });
+  };
+  $('report').addEventListener('click', openPreset);
+  $('design').addEventListener('click', openPreset);
   new ResizeObserver(() => renderTimingTab()).observe($('timing'));
 
   // ---------- exports / examples ----------
@@ -799,6 +801,7 @@
     g32_low_latency_bankpath: '32G · bank path only · lowest latency (63 ns) · 256-WL MATs, BRVSA · 17.2 × 11.9 mm · 32.6 Gb/s',
     g32_2bg_64b_bankpath: '32G · bank path only · 2 BGs × 16 banks, 64 B access, coupled ×4 · 26.5 × 10.9 mm · 33.1 Gb/s',
     g32_2bg_staged_bank: '32G · staged, per-bank IOSA · 2 BGs × 8 banks, 64 B access, 4 TSVs / DQ · 14.3 × 10.5 mm · 32.2 Gb/s',
+    g32_64b_fp5_lowpower: '32G · 64 B · lowest power within 5% of HBM4 footprint · 107 W · 14.3 × 11.2 mm',
     hbm4if_8g_mid: '8 Gb/s · smallest die · mid-bank decoder, 16 × 512-BL MATs · 8.6 × 14.6 mm · 125.6 mm²',
     hbm4if_8g_bank: '8 Gb/s · 2nd smallest · coupled ×2, 2 channel rows · 7.2 × 17.8 mm · 127.0 mm²',
     hbm4if_8g_pkg: '8 Gb/s · fits HBM4 footprint · 64 × 512-BL MATs, coupled ×4, 2 channel rows · 14.0 × 10.9 mm · 153.5 mm²',

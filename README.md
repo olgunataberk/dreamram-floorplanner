@@ -636,6 +636,12 @@ It then shows two plots:
 
 Fault coverage: a 64 B access gives each of its two OD-ECC codewords 4 check symbols, so each corrects 2. Only designs with 16 MDLs per MAT, which put 2 symbols per codeword, correct a sub-wordline driver fault. The viewer's OD-ECC check now uses the access size's correction capacity instead of assuming 1. No design fits the footprint exactly; the closest is 14.30 × 10.45 mm, 0.9% too wide.
 
+The lowest-power design within 5% of the footprint is bundled as **32G · 64 B · lowest power within 5% of HBM4 footprint**:
+- 1 × 2 bank groups of 8 banks, 16 × 512-WL subarrays, 16 × 1024-BL MATs coupled ×2, 64 MDLs, two channel rows, mid-bank column decoder;
+- 14.30 × 11.21 mm = 160.4 mm² (1.28 : 1);
+- 107 W worst case, 73.5 ns row-miss latency, tCCD_L 0.84 ns;
+- no driver-fault correction.
+
 **Package friendliness.** The sweep also places a die's channels in one row (DreamRAM) or two (`channel_rows`, as in Samsung's HBM4). It reports each die's aspect ratio (long side / short side; the JEDEC HBM4 footprint is 1.29), the squarest passing die within `--area-slack` (10%) of the smallest, and drops dies above `--max-aspect`. The smallest passing dies are long and thin, up to 2.8 : 1. Picking the channel and bank-group arrangement for shape costs about 10–20% area. At 32 Gb/s with aspect ≤ 1.3, the designs that pass under every IOSA placement are:
 - 4 PCs × 16 DQ with 4 groups: 158.0 mm², 14.30 × 11.05 mm, 85 ns;
 - 64 B with 4 groups: 160.5 mm², 14.30 × 11.22 mm, 142 ns.
