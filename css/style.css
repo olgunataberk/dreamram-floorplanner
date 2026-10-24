@@ -304,3 +304,7 @@ body.tab-report #cv, body.tab-report .hint, body.tab-report #tip, body.tab-repor
 .dsramp { display: inline-block; width: 130px; height: 10px; border-radius: 3px; background: linear-gradient(90deg, var(--seq-lo), var(--seq-hi)); }
 .dslshape { fill: var(--dim); }
 .dsempty { padding: 28px 16px; color: var(--dim); text-align: center; }
+.tref { border-collapse: collapse; margin-top: 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.tref th, .tref td { padding: 4px 12px; text-align: right; border-bottom: 1px solid var(--border); }
+.tref th { color: var(--dim); font-weight: 600; }
+.tref td:first-child, .tref th:first-child { text-align: left; }

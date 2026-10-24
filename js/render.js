@@ -10,7 +10,7 @@
       canvas: '#0f1217', grid: '#1a1f27', text: '#e6e9ef', textDim: '#9aa3b2', outline: 'rgba(230,233,239,0.55)',
       accent: '#ffd166', hover: 'rgba(255,255,255,0.9)', mask: 'rgba(8,10,14,0.62)',
       channel: '#7aa2f7', pch: '#9ece6a', bg: '#e0af68', bank: '#c0caf5', subarray: '#565f89',
-      mat: '#3d6fb6', matExtra: '#344a6b', eccmat: '#8e5fc4', eccOd: '#6f4aa8', salpbuf: '#4b4f5c', extrarow: '#3a4252',
+      mat: '#3d6fb6', matExtra: '#344a6b', eccmat: '#8e5fc4', eccOd: '#6f4aa8', rhcells: '#d9534f', salpbuf: '#4b4f5c', extrarow: '#3a4252',
       blsa: '#d08a3c', swd: '#5c6b73', conj: '#3e474d', rowdec: '#e8b98a', coldec: '#8fb8de', corner: '#6d7d8f',
       dummy: '#2c313b', ioctl: '#e27aa6', ctrl: '#a68b6d', mbus: '#4f9d77', tsvother: '#5a4636', tsvcmd: '#b2453f', tsvdata: '#a23f8c',
       tsvDot: '#f2c6de', tsvCmdDot: '#ffb4a8',
@@ -26,7 +26,7 @@
       canvas: '#f6f7f9', grid: '#e6e8ec', text: '#1d2330', textDim: '#5d6676', outline: 'rgba(29,35,48,0.55)',
       accent: '#d97706', hover: 'rgba(0,0,0,0.85)', mask: 'rgba(246,247,249,0.7)',
       channel: '#2f5fd0', pch: '#4d8a1f', bg: '#b7791f', bank: '#3a4566', subarray: '#8a93ab',
-      mat: '#9cc1ef', matExtra: '#c5d2e3', eccmat: '#c7a6ec', eccOd: '#b190e0', salpbuf: '#c9ccd3', extrarow: '#d6dbe3',
+      mat: '#9cc1ef', matExtra: '#c5d2e3', eccmat: '#c7a6ec', eccOd: '#b190e0', rhcells: '#e8837f', salpbuf: '#c9ccd3', extrarow: '#d6dbe3',
       blsa: '#f0b46b', swd: '#a9b6bd', conj: '#8e9aa1', rowdec: '#f6cfa6', coldec: '#b9d6f2', corner: '#a8b4c2',
       dummy: '#dfe2e7', ioctl: '#ef9cc0', ctrl: '#d6bf9f', mbus: '#9fd4b6', tsvother: '#d9c4b0', tsvcmd: '#ef9a92', tsvdata: '#e3a1d1',
       tsvDot: '#7a2160', tsvCmdDot: '#8f241b',
@@ -329,13 +329,14 @@
         const R = (r, c, key) => { if (this.layerOn(key)) this.fill(r, c); };
         R(F(0, 0, b.bank_x, d2), P.dummy, 'dummy');
         R(F(0, d2 + b.bank_y, b.bank_x, d2), P.dummy, 'dummy');
-        R(F(b.rowdec_w, d2, b.cells_w + b.swd_total, arrH), P.mat, 'mat');
+        R(F(b.rowdec_w, d2, b.cells_w + b.swd_total + b.rh_w, arrH), P.mat, 'mat');
         R(F(0, d2, b.rowdec_w, arrH), P.rowdec, 'rowdec');
         R(F(0, d2 + arrH, b.bank_x, b.coldec_h), P.coldec, 'coldec');
         R(F(b.rowdec_w + b.data_w + b.swd_w * (m.p.mats + m.p.subchannels), d2, b.ecc_w + b.swd_w * b.ecc_mats, arrH), P.eccmat, 'eccmat');
+        if (b.rh_w) R(F(b.bank_x - b.swd_w - b.rh_w, d2, b.rh_w, arrH), P.rhcells, 'rhcells');
         if (this.layerOn('blsa') && sh > 26) {
           let v = d2 + b.mat_h;
-          for (let i = 0; i < b.rows; i++, v += b.mat_h + b.blsa_h) this.fill(F(b.rowdec_w, v, b.cells_w + b.swd_total, b.blsa_h), P.blsa);
+          for (let i = 0; i < b.rows; i++, v += b.mat_h + b.blsa_h) this.fill(F(b.rowdec_w, v, b.cells_w + b.swd_total + b.rh_w, b.blsa_h), P.blsa);
         }
         return;
       }
@@ -343,8 +344,8 @@
         const F = bankFrame(n.bank);
         const v = n.local.v;
         const u0 = b.rowdec_w;
-        if (this.layerOn('mat')) this.fill(F(u0, v, b.cells_w + b.swd_total, b.mat_h), n.type === 'subarray' ? P.mat : P.matExtra);
-        if (this.layerOn('blsa')) this.fill(F(u0, v + b.mat_h, b.cells_w + b.swd_total, b.blsa_h), P.blsa);
+        if (this.layerOn('mat')) this.fill(F(u0, v, b.cells_w + b.swd_total + b.rh_w, b.mat_h), n.type === 'subarray' ? P.mat : P.matExtra);
+        if (this.layerOn('blsa')) this.fill(F(u0, v + b.mat_h, b.cells_w + b.swd_total + b.rh_w, b.blsa_h), P.blsa);
         return;
       }
       if (this.typeOn(n.type)) this.fill(n, P[n.type] || P.grid);

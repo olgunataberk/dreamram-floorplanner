@@ -666,6 +666,41 @@ Three scenarios:
 
 The stage widths come from the staged model. With the staged model off, the same split is scaled to DreamRAM's tCK, and the header says so. Hover any segment for its duration. It follows the selected design and every parameter change.
 
+## Per-row activation counting (`prac`)
+
+PRHT (Kim et al., SK hynix, ISSCC 2023, 28.8) and DDR5's PRAC both keep an activation counter for every row in extra "R/H" cell columns. After each activation the bank does an activation counter update (ACU): an internal read of the counter through a small IOSA, an add, and an internal write back. Turn it on under **Parameters → Extensions → Per-row activation counting**, or with `--set prac=1` (`prac_bits`: 8 / 12 / 16, default 12 as in PRHT).
+
+**Area.** `prac_bits` × the independently activated row segments of cells widen every subarray row, beside the ECC MATs (component **PRAC counter cells**). They hold no data, so they count as overhead, not cell area. PRHT's control logic (IOSA, write driver, adder, comparator, latches) is not modelled.
+
+**Timing, calibrated on DDR5.** DDR5 runs the ACU after PRECHARGE while the row finishes restoring. The model reproduces DDR5-3200AN's default speed bin against JESD79-5 Table 343 (PRAC on):
+
+| ns | tRCD | tRAS | tRP | tRC | tRTP | tWR |
+| --- | --- | --- | --- | --- | --- | --- |
+| DDR5-3200AN | 15 | 32 | 15 | 47 | 7.5 | 30 |
+| DDR5, PRAC | 15 | 16 | 36 | 52 | 5 | 10 |
+
+- **ACU** = 4.2 column cycles of the bank's own path: (36 − 15) ns over DDR5-3200's 5 ns tCCD_L. The column cycle is the staged bank cycle with `tccd_staged`, else DreamRAM's bank-path tCK. It always uses one pump, since the counter is a few bits.
+- **tRP** = tRP + ACU.
+- **tRAS** = max(tRCD × 16/15, tRAS − ACU), because the restore overlaps the ACU.
+- **tRC** = tRAS + tRP.
+- **tRTP** × 2/3 and **tWR** = max(tWR / 3, tWR − ACU).
+- Row-miss latency (tCL + tRCD + tRP) grows by the ACU.
+
+With PRAC enabled, DDR5-3200 itself comes out at its Table 343 values: tRAS 16, tRP 36, tRC 52 ns.
+
+| Design | ACU | tRAS | tRP | tRC | Row-miss latency |
+| --- | --- | --- | --- | --- | --- |
+| HBM3 baseline | 8.4 ns | 27.0 → 19.2 | 18.0 → 26.4 | 45.0 → 45.6 | 64.0 → 72.4 ns (+13%) |
+| HBM4 1 SID, coupled | 8.1 | 27.0 → 19.2 | 18.0 → 26.1 | 45.0 → 45.3 | 63.7 → 71.8 (+13%) |
+| 16 Gb/s, HBM4 footprint | 3.2 | 19.6 → 16.5 | 17.8 → 21.0 | 37.5 → 37.5 | 63.4 → 66.6 (+5%) |
+| 32G, 64 B, 5% of footprint | 3.4 | 26.8 → 23.4 | 17.8 → 21.2 | 44.7 → 44.7 | 73.5 → 76.9 (+5%) |
+
+- **HBM's column path is 2.5–6× faster than DDR5's, so the counter update is short.** It fits almost entirely under the cell restore, and tRC barely moves.
+- **The cost of counting is row-miss latency.** It's +13% at HBM3/HBM4 speeds, and +5% on the fast-column 16 and 32 Gb/s designs.
+- **The counter columns add 0.4–0.6 µm per bank,** under 0.05% of the die.
+
+The **Timing** tab's **Row cycle (PRAC)** view draws one activation without and with PRAC: ACT, RD, PRE, the counter's IRD / +1 / IWR, the bitline precharge and the next ACT, with the DDR5 reference table. The metrics panel shows tRAS / tRP / tRC and, with PRAC on, the ACU and its cost against the same design without it. The extra refreshes PRHT issues to mitigate aggressors (counter reset + neighbour refresh) depend on the access pattern and are not modelled.
+
 ## Drawing choices (not specified by DreamRAM)
 
 DreamRAM's model fixes the size of every block, but not always where each block sits. Where it does not, the viewer makes these choices:

@@ -23,6 +23,19 @@
     _c_csl: 0.00098, _c_mdl: 0.00049, _c_ldl: 0.00049, c_within_sparse: 0.66, c_within_csl_mdl: 0.33,
     _c_bl_per_cell: 0.0000417, _c_cell: 0.008, _c_blsa: 0.0033,
     _trcd: 18, _trcd_brvsa: 10.8, _trcd_signal: 2.9, brvsa_cs_prop: 0.89, mat_rows_ref: 512,
+    _tras_restore: 9.0, _twr_restore: 18.6, // hbm3_timing_baseline.json ("tras restore", "twr restore")
+  };
+  // PRAC (prac extension; mirrors tools/export_floorplan.py PRAC): calibrated on DDR5-3200AN, default speed-bin
+  // timings vs JESD79-5 Table 343 with per-row activation counting enabled
+  DR.DDR5_PRAC = {
+    default: { trcd: 15, trp: 15, tras: 32, trc: 47, trtp: 7.5, twr: 30, tccdl: 5 },
+    prac: { tras: 16, trp: 36, trc: 52, trtp: 5, twr: 10 },
+  };
+  DR.PRAC = {
+    acu_cycles: (DR.DDR5_PRAC.prac.trp - DR.DDR5_PRAC.default.trp) / DR.DDR5_PRAC.default.tccdl, // ACU = 4.2 column cycles
+    tras_floor: DR.DDR5_PRAC.prac.tras / DR.DDR5_PRAC.default.trcd,
+    trtp_scale: DR.DDR5_PRAC.prac.trtp / DR.DDR5_PRAC.default.trtp,
+    twr_scale: DR.DDR5_PRAC.prac.twr / DR.DDR5_PRAC.default.twr,
   };
   DR.TECH_PRESETS = {
     '16nm': Object.assign({ label: '16 nm scaled (HBM3, default)', f: 0.016, pitch_wl: 0.041, pitch_bl: 0.047 }, TECH_COMMON),
@@ -69,7 +82,7 @@
     _tck: 2, _tcl: 28,
     // extensions beyond DreamRAM (tools/export_floorplan.py implements the same in an Hbm subclass)
     coupled_rows: 1, coupled_lsb: 0, edge_pairing: 0, ioctl_h: 0, channel_rows: 1, tccd_bgbus: 0,
-    tccd_staged: 0, mdl_share: 1, col_mid: 0, od_ecc_logic: 1,
+    tccd_staged: 0, mdl_share: 1, col_mid: 0, od_ecc_logic: 1, prac: 0, prac_bits: 12,
     tck_fixed: 1, tck_fixed_scale: 0, tck_wire: 1, bw_bg_cap: 0, tsv_chain: 0,
   };
 
@@ -110,6 +123,8 @@
       ['mdl_share', 'MDL / IOSA sharing (staged)', [[1, 'IOSA shared at I/O control (HBM3)'], [0, 'Per-bank IOSA at bank edge'], [2, 'One MDL line shared per side']]],
       ['col_mid', 'Column decoder (staged)', [[0, 'At bank edge (DreamRAM)'], [1, 'Mid-bank: halves CSL / MDL']]],
       ['od_ecc_logic', 'OD-ECC / DBI in tCCD_L (staged)', [[1, 'Yes (HBM3 and later)'], [0, 'No']]],
+      ['prac', 'Per-row activation counting', [[0, 'Off'], [1, 'PRAC / PRHT (DDR5 timing)']]],
+      ['prac_bits', 'PRAC counter bits per row', [[12, '12 (PRHT)'], [16, '16'], [8, '8']]],
       ['tccd_bgbus', 'tCCD_L from', [[0, 'Bank column path only (DreamRAM)'], [1, 'Slower of bank path and BG-BUS window']]],
       ['tck_fixed', 'Fixed column-cycle time', [[1, '1 ns (DreamRAM)'], [0.75, '0.75 ns'], [0.5, '0.5 ns'], [0.25, '0.25 ns'], [0, '0 · wire delay only']]],
       ['tck_fixed_scale', 'Fixed time vs. node', [[0, 'Constant (DreamRAM)'], [1, 'Scales with logic: (f / 16 nm)^0.9']]],
@@ -157,10 +172,12 @@
     const cells_h = rows * mat_h;
     const swd_total = ts.swd_w * swd_count;
     const blsa_total = blsa_h * rows;
+    // PRAC counter cells: prac_bits per independently activated row segment, beside the ECC columns (no data)
+    const rh_w = p.prac ? p.prac_bits * pow(2, p.ha_layout) * p.subchannels * t.iso_cols * t.pitch_bl : 0;
     return {
       rowdec_w: ts.rowdec_w, coldec_h: ts.coldec_h, swd_w: ts.swd_w, blsa_h, ecc_mats, swd_count, rows,
-      mat_w, mat_h, data_w, ecc_w, cells_w, cells_h, swd_total, blsa_total,
-      bank_x: ts.rowdec_w + cells_w + swd_total,
+      mat_w, mat_h, data_w, ecc_w, cells_w, cells_h, swd_total, blsa_total, rh_w,
+      bank_x: ts.rowdec_w + cells_w + swd_total + rh_w,
       bank_y: ts.coldec_h + cells_h + blsa_total,
       cell_area_bank: cells_w * cells_h,
       // Hbm.dummy_subarray_height; paired edge subarrays hold data instead (extension)
@@ -405,7 +422,21 @@
       const q = t.brvsa_cs_prop;
       trcd = tsig + (t._trcd_brvsa - t._trcd_signal) * (q * (t._c_cell + bl) / (t._c_cell + _bl) + (1 - q) * full);
     }
-    const trp = tsig + (t._trcd - t._trcd_signal) * full;
+    let trp = tsig + (t._trcd - t._trcd_signal) * full;
+    // Hbm.tras / trc / trtp / twr; restore scales with bitline + cell capacitance
+    const restore = (t._c_cell + bl) / (t._c_cell + _bl);
+    let tras = trcd + t._tras_restore * restore;
+    let twr = tsig + t._twr_restore * restore;
+    let trtp = 5 * core_tck / 4 * pumps;
+    // prac: the activation counter update (ACU) runs after PRE on the bank's own column path; the row restores
+    // meanwhile, so tRAS can end right after sensing (DDR5 PRAC, calibrated in DR.PRAC)
+    const acu = p.prac ? DR.PRAC.acu_cycles * (staged ? staged.bank : tck_bank) : 0;
+    if (p.prac) {
+      trp += acu;
+      tras = Math.max(DR.PRAC.tras_floor * trcd, tras - acu);
+      trtp *= DR.PRAC.trtp_scale;
+      twr = Math.max(DR.PRAC.twr_scale * twr, twr - acu);
+    }
 
     const tsv_c = t._c_tsv * (t.tsv_pitch / t._tsv_pitch) * (t.tsv_height / t._tsv_height) + t._c_load;
     const rise = -Math.log(1 - 0.8);
@@ -433,7 +464,7 @@
     ];
     return {
       core_tck, tck_bank, tck_bgbus, tck_fixed: fixed, limiter: staged ? staged.limiter : p.tccd_bgbus && tck_bgbus > tck_bank ? 'BG-BUS window' : 'bank column path',
-      bw, bw_peak, trcd, trp, tcl, latency: tcl + trcd + trp, dq_rate: dq_speed / core_tck,
+      bw, bw_peak, trcd, trp, tras, trc: tras + trp, trtp, twr, acu, tcl, latency: tcl + trcd + trp, dq_rate: dq_speed / core_tck,
       tccdl, tccds, bg_rate, pc_rate, bgs_needed, bgs_per_pc, levels, pumps, staged, stagedView,
     };
   }
@@ -512,6 +543,7 @@
     const parts = [
       ['cells', 'Data cells', n * b.data_w * dataRowsCells],
       ['ecc', 'ECC cells', n * b.ecc_w * dataRowsCells],
+      ['prac', 'PRAC counter cells', n * b.rh_w * (b.cells_h + b.blsa_total)],
       ['extrarow', 'Extra / SALP rows', n * b.cells_w * extraRowsCells],
       ['blsa', 'BLSA', n * b.cells_w * b.blsa_total],
       ['swd', 'SWD + conj.', n * b.swd_total * (b.cells_h + b.blsa_total)],
@@ -545,6 +577,11 @@
       add('tCL', m.timing.tcl, ex.metrics.tcl);
       add('tRCD', m.timing.trcd, ex.metrics.trcd);
       add('tRP', m.timing.trp, ex.metrics.trp);
+      add('tRAS', m.timing.tras, ex.metrics.tras);
+      add('tRC', m.timing.trc, ex.metrics.trc);
+      add('tRTP', m.timing.trtp, ex.metrics.trtp);
+      add('tWR', m.timing.twr, ex.metrics.twr);
+      add('PRAC counter update', m.timing.acu, ex.derived && ex.derived.prac_acu_ns);
       add('tCCD_L', m.timing.tccdl, ex.metrics.tccdl);
       add('bank-path stage', m.timing.tck_bank, ex.derived && ex.derived.tck_bank_stage);
       add('BG-BUS stage', m.timing.tck_bgbus, ex.derived && ex.derived.tck_bgbus_stage);

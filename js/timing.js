@@ -10,6 +10,7 @@
     same_bank: { label: 'Same bank', gap: 'tccdl', bgOf: () => 0, bankOf: () => 0 },
     same_bg: { label: 'Other bank, same bank group', gap: 'tccdl', bgOf: () => 0, bankOf: (k) => k },
     other_bg: { label: 'Other bank group', gap: 'tccds', bgOf: (k) => k % 2, bankOf: (k) => Math.floor(k / 2) },
+    row: { label: 'Row cycle (PRAC)' },
   };
   const N_READS = 4;
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -61,6 +62,7 @@
     }
     const P = DR.PALETTES[state.theme];
     const scen = state.scenario || 'same_bg';
+    if (scen === 'row') return renderRow(container, m, state, P);
     const S = schedule(m, scen);
     const sv = tm.stagedView, pumps = tm.pumps, share = m.p.mdl_share;
     const bgs = scen === 'other_bg' ? [0, 1] : [0];
@@ -177,6 +179,81 @@
       <div class="twrap">${svg}</div>
       <div class="tstages">${Object.entries(sv.parts).map(([k, v]) => `<span><b>${DR.STAGE_LABELS[k]}</b> ${f2(v * S.scale)} ns</span>`).join('')}
         ${Object.entries(sv.sharedParts).map(([k, v]) => `<span class="sh"><b>${DR.STAGE_LABELS[k]}</b> ${f2(v * S.scale)} ns${pumps > 1 ? ` (${pumps} pumps)` : ''}</span>`).join('')}</div>`;
+    container.querySelectorAll('[data-scen]').forEach((btn) => (btn.onclick = () => { state.scenario = btn.dataset.scen; render(container, m, state); }));
+  }
+
+  // One activation, ACT -> RD -> PRE -> next ACT, without and with per-row activation counting. With PRAC the
+  // activation counter update (internal read, +1, internal write; Kim et al., ISSCC 2023) runs after PRE while the
+  // row finishes restoring; the bitlines precharge only after it (DDR5 PRAC timing, DR.PRAC).
+  function renderRow(container, m, state, P) {
+    const rowTiming = (prac) => DR.compute(Object.assign({}, m.p, { prac }), m.techKey).timing;
+    const off = rowTiming(0), on = rowTiming(1);
+    if (!off || !on) { container.innerHTML = '<div class="tnote">No timing for this design.</div>'; return; }
+    const W = Math.max(640, container.clientWidth - 24), labelW = 150;
+    const span = Math.max(off.trc, on.trc) * 1.06;
+    const X = (t) => labelW + t * (W - labelW - 16) / span;
+    const LH = 28, out = [];
+    const c = { cmd: P.cpl[0], wl: P.cpl[1], sense: P.cpl[2], restore: P.cpl[3], acu: P.pages[0], pre: P.pages[1] };
+    const txt = (x, y, str, cls, anchor) => out.push(`<text x="${x}" y="${y}" class="${cls || ''}" text-anchor="${anchor || 'start'}">${esc(str)}</text>`);
+    const box = (y, a, b, color, label, title) => {
+      const x1 = X(a), x2 = X(b), h = LH - 12;
+      if (x2 - x1 < 0.5) return;
+      out.push(`<g><title>${esc(title)}</title><rect x="${x1}" y="${y + 6}" width="${x2 - x1}" height="${h}" rx="3" fill="${color}" fill-opacity="0.85" stroke="${color}"/>`
+        + (label && x2 - x1 > label.length * 6 + 6 ? `<text x="${(x1 + x2) / 2}" y="${y + 6 + h / 2 + 4}" text-anchor="middle" class="tbox">${esc(label)}</text>` : '') + '</g>');
+    };
+    const bracket = (y, a, b, label) => {
+      out.push(`<path d="M${X(a)},${y + 6} L${X(a)},${y} L${X(b)},${y} L${X(b)},${y + 6}" class="tbracket"/>`);
+      txt((X(a) + X(b)) / 2, y - 4, label, 'tbrlabel', 'middle');
+    };
+    let y = 30;
+    // vertical grid every 5 ns
+    for (let t = 0; t <= span; t += 5) {
+      out.push(`<line x1="${X(t)}" x2="${X(t)}" y1="20" y2="${20 + 2 * (6 * LH + 50)}" class="tgrid"/>`);
+      txt(X(t), 14, `${t}`, 'tsmall', 'middle');
+    }
+    const restoreEnd = off.tras; // the cells need the same restore time either way
+    for (const [name, tm, prac] of [['Without PRAC', off, false], ['With PRAC', on, true]]) {
+      txt(8, y + 4, name, 'tlabel');
+      y += 22;
+      bracket(y + 4, 0, tm.trcd, `tRCD ${f2(tm.trcd)}`);
+      bracket(y + 4, tm.trcd, tm.tras, `→ tRAS ${f2(tm.tras)}`);
+      y += 14;
+      const lanes = ['Command', 'Wordline', 'Bitlines', ...(prac ? ['Counter (R/H cells)'] : []), 'Precharge'];
+      lanes.forEach((l, i) => { txt(8, y + i * LH + LH / 2 + 4, l, 'tlabel'); out.push(`<line x1="${labelW}" x2="${W - 16}" y1="${y + i * LH + LH}" y2="${y + i * LH + LH}" class="tlane"/>`); });
+      const L = (k) => y + lanes.indexOf(k) * LH;
+      const acu = prac ? tm.acu : 0, preEnd = tm.tras + acu + (tm.trp - acu);
+      box(L('Command'), 0, Math.min(1, tm.trcd), c.cmd, 'ACT', 'ACTIVATE');
+      box(L('Command'), tm.trcd, tm.trcd + 1, c.cmd, 'RD', 'READ (earliest, tRCD after ACT)');
+      box(L('Command'), tm.tras, tm.tras + 1, c.cmd, 'PRE', `PRECHARGE (earliest, tRAS = ${f2(tm.tras)} ns after ACT)`);
+      box(L('Command'), tm.trc, tm.trc + 1, c.cmd, 'ACT', `next ACTIVATE to this bank: tRC = tRAS + tRP = ${f2(tm.trc)} ns`);
+      box(L('Wordline'), 0, tm.tras + acu, c.wl, 'wordline high', `wordline open for ${f2(tm.tras + acu)} ns${prac ? ' (through the counter update)' : ''}`);
+      box(L('Bitlines'), 0, tm.trcd, c.sense, 'sense', `charge sharing + sensing: ${f2(tm.trcd)} ns`);
+      box(L('Bitlines'), tm.trcd, restoreEnd, c.restore, 'restore', `restore into the cells until ${f2(restoreEnd)} ns${prac ? ', overlapping the counter update' : ''}`);
+      if (prac) {
+        const a = tm.tras;
+        box(L('Counter (R/H cells)'), a, a + 0.4 * acu, c.acu, 'IRD', 'internal read of the row\'s activation counter through the PRHT IOSA');
+        box(L('Counter (R/H cells)'), a + 0.4 * acu, a + 0.6 * acu, c.acu, '+1', 'adder: count + 1, compare with the running maximum');
+        box(L('Counter (R/H cells)'), a + 0.6 * acu, a + acu, c.acu, 'IWR', `internal write back; activation counter update = ${f2(acu)} ns`);
+      }
+      box(L('Precharge'), tm.tras + acu, preEnd, c.pre, 'precharge', `bitline equalise: ${f2(tm.trp - acu)} ns`);
+      y += lanes.length * LH + 18;
+      bracket(y, tm.tras, tm.trc, `tRP ${f2(tm.trp)}${prac ? ` (incl. counter update ${f2(acu)})` : ''}`);
+      y += 12;
+      bracket(y + 10, 0, tm.trc, `tRC ${f2(tm.trc)}`);
+      y += 40;
+    }
+    const H = y + 10;
+    const d5 = DR.DDR5_PRAC, row = (k, lab) => `<tr><td>${lab}</td><td>${f2(d5.default[k])}</td><td>${f2(d5.prac[k])}</td><td>${f2(off[k])}</td><td>${f2(on[k])}</td></tr>`;
+    container.innerHTML = `<div class="thead">
+        <div class="tseg">${Object.entries(SCENARIOS).map(([k, v]) => `<button data-scen="${k}" class="${k === 'row' ? 'on' : ''}">${v.label}</button>`).join('')}</div>
+        <div class="tsum">counter update <b>${f2(on.acu)} ns</b> · tRC <b>${f2(off.trc)} → ${f2(on.trc)} ns</b> · row-miss latency <b>${f2(off.latency)} → ${f2(on.latency)} ns</b>${m.p.prac ? '' : ' · PRAC is off for this design (shown for comparison)'}</div>
+      </div>
+      <div class="twhy">Per-row activation counting keeps a ${m.p.prac_bits}-bit counter for every row. After each activation the bank reads it through a small IOSA, adds one and writes it back (PRHT, Kim et al., ISSCC 2023). DDR5 PRAC runs this counter update after PRECHARGE while the row finishes restoring, so tRP grows by the update time, tRAS can end right after sensing, and tRC grows only by what the restore cannot hide. Here the update takes ${f2(DR.PRAC.acu_cycles)} column cycles, the ratio DDR5-3200 shows (21 ns over a 5 ns tCCD_L).</div>
+      <div class="twrap"><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" class="tsvg">${out.join('\n')}</svg></div>
+      <div class="twrap"><table class="tref"><thead><tr><th>ns</th><th>DDR5-3200AN</th><th>DDR5 PRAC</th><th>This design</th><th>This design, PRAC</th></tr></thead><tbody>
+        <tr><td>tRCD</td><td>${f2(d5.default.trcd)}</td><td>${f2(d5.default.trcd)}</td><td>${f2(off.trcd)}</td><td>${f2(on.trcd)}</td></tr>
+        ${row('tras', 'tRAS')}${row('trp', 'tRP')}${row('trc', 'tRC')}${row('trtp', 'tRTP')}${row('twr', 'tWR')}
+      </tbody></table></div>`;
     container.querySelectorAll('[data-scen]').forEach((btn) => (btn.onclick = () => { state.scenario = btn.dataset.scen; render(container, m, state); }));
   }
 

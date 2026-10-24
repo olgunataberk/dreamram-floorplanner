@@ -18,6 +18,7 @@
     extrarow: { label: 'Extra subarray row (+1)', layer: 'extrarow', level: true },
     mat: { label: 'MAT', layer: 'mat', level: true },
     eccmat: { label: 'ECC MAT', layer: 'eccmat', level: true },
+    rhcells: { label: 'PRAC counter cells', layer: 'rhcells' },
     blsa: { label: 'BLSA stripe', layer: 'blsa' },
     swd: { label: 'Sub-wordline driver (LWD) stripe', layer: 'swd' },
     conj: { label: 'SWD/BLSA conjunction', layer: 'swd' },
@@ -286,6 +287,14 @@
       u += eccW;
       swd();
     }
+    // PRAC counter cells (extension) sit beside the last ECC MAT, inside its outer SWD stripe
+    if (b.rh_w) {
+      const last = cols.pop();
+      u -= last.w;
+      cols.push({ kind: 'rhcells', u, w: b.rh_w });
+      u += b.rh_w;
+      swd();
+    }
     return cols;
   };
 
@@ -309,7 +318,7 @@
       const name = row.kind === 'subarray' ? `Subarray ${row.idx}${row.repair ? ' (repair)' : ''}${row.edge ? ` · ${row.edge} edge half` : ''}`
         : row.kind === 'salpbuf' ? `SALP buffer (before group ${row.group})` : 'Extra subarray row (+1)';
       const v0 = v;
-      const sa = mk(row.kind, name, F(b.rowdec_w, v0, b.cells_w + b.swd_total, b.mat_h + b.blsa_h),
+      const sa = mk(row.kind, name, F(b.rowdec_w, v0, b.cells_w + b.swd_total + b.rh_w, b.mat_h + b.blsa_h),
         { row, local: { v: v0 }, cols });
       sa.gen = () => buildSubarray(m, bk, sa, F, v0, cols);
       kids.push(sa);
@@ -334,7 +343,7 @@
         kids.push(node('conj', 'SWD/BLSA conjunction', q.x, q.y, q.w, q.h, { bank: bk, sa }));
       } else {
         const r = F(u0 + c.u, v, c.w, b.mat_h);
-        const nm = c.kind === 'mat' ? `MAT ${c.idx}` : `ECC MAT ${c.idx} (${c.ecc})`;
+        const nm = c.kind === 'mat' ? `MAT ${c.idx}` : c.kind === 'rhcells' ? 'PRAC counter cells' : `ECC MAT ${c.idx} (${c.ecc})`;
         kids.push(node(c.kind, nm, r.x, r.y, r.w, r.h, { bank: bk, sa, col: c, rowKind: sa.row.kind }));
         const q = F(u0 + c.u, blsaV, c.w, b.blsa_h);
         kids.push(node('blsa', 'BLSA', q.x, q.y, q.w, q.h, { bank: bk, sa, col: c }));

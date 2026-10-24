@@ -12,6 +12,7 @@
     ] },
     { group: 'Bank internals', items: [
       ['mat', 'MAT cell arrays', 'mat', true], ['eccmat', 'ECC MATs (MD / OD)', 'eccmat', true],
+      ['rhcells', 'PRAC counter cells', 'rhcells', true],
       ['blsa', 'Bitline sense amps', 'blsa', true], ['swd', 'Sub-WL drivers (LWD)', 'swd', true],
       ['rowdec', 'Row decoder', 'rowdec', true], ['coldec', 'Column decoder', 'coldec', true],
       ['dummy', 'Dummy half-subarrays', 'dummy', true], ['salpbuf', 'SALP buffer subarrays', 'salpbuf', true],
@@ -48,6 +49,7 @@
     extrarow: 'DreamRAM sizes the cell array as subarrays + (SALP groups − 1) + repair + 1 rows; this is that +1 row (and its BLSA stripe).',
     mat: 'Cell array of wordlines × bitlines with isolation overheads. Routing over the MAT follows the MDL/CSL config (paper Fig. 3).',
     eccmat: 'ECC columns: (MD-ECC 1/16 + OD-ECC 1/8) × data bits per row, drawn as whole MATs. Each adds an SWD stripe.',
+    rhcells: 'PRAC / PRHT counter cells (extension): prac_bits per independently activated row, read, incremented and written back after every activation (Kim et al., ISSCC 2023, 28.8). Drawn at their real width beside the ECC MATs.',
     blsa: 'Bitline sense-amp stripe. Height grows with BRVSA (×1.33), MDL drivers inside the BLSA (×1.26) and >8 LDLs (Hbm.blsa_height).',
     swd: 'Local wordline (sub-wordline) driver stripe; one between every pair of MATs, plus one per extra subchannel boundary.',
     conj: 'Where an SWD stripe crosses a BLSA stripe (counted in both bank_x and bank_y).',
@@ -550,10 +552,13 @@
       rows.push(['WL × BL', `${p.mat_rows} × ${p.mat_cols}`], ['Capacity', `${p.mat_rows * p.mat_cols / 1024} Kib`], ['Row page', n.col.page], ['Subchannel', n.col.sc], ['MDLs', `${p.ldls_mdls} pairs`], ['CSLs', fmt(m.pitch.csl_count, 0)], ['Routing', { 0: 'MDL/SWD · CSL/MAT', 1: 'DLOMAT', 3: p.csl_mdl_shared_layer ? 'MDL+CSL/MAT, shared' : 'MDL+CSL/MAT, 2 layers' }[p.mdlcsl]], ['Cell eff. (MAT)', fmt(100 * (b.mat_w * b.mat_h) / ((b.mat_w + b.swd_w) * (b.mat_h + b.blsa_h)), 1) + ' %']); break;
       case 'eccmat': rows.push(['Kind', n.col.ecc], ['Bits / row', fmt(n.col.w / (m.t.pitch_bl * m.t.iso_cols), 0)], ['OD-ECC', eccWhere(n.col)]); break;
       case 'blsa': rows.push(['Height', DR.fmtLen(b.blsa_h)], ['Sense amp', p.brvsa ? 'BRVSA / OCSA' : 'BLSA']); break;
+      case 'rhcells': rows.push(['Width', DR.fmtLen(b.rh_w)], ['Counters / row', `${m.pages.ind_row_pages} × ${p.prac_bits} b`],
+        ['Update per ACT', m.timing ? `read + 1 + write, ${fmt(m.timing.acu, 2)} ns after PRE` : '—']); break;
       case 'swd': {
         rows.push(['Width', DR.fmtLen(b.swd_w)], ['Stripes / row', b.swd_count]);
         // a driver fault hits the local wordline in both neighbouring MATs (Ryu et al., Fig. 5b)
-        const [l, r] = n.between || [];
+        // PRAC counter cells carry no OD-ECC symbols, so a fault next to them only counts the MAT on the other side
+        const [l, r] = (n.between || []).map((c) => (c && c.kind === 'rhcells' ? null : c));
         if (l && r && n.sa.row.kind === 'subarray') {
           const name = (c) => (c.kind === 'mat' ? 'MAT ' + c.idx : 'ECC ' + c.idx);
           const sym = (c) => Array.from({ length: Math.max(1, Math.round(ecc.spm)) }, (_, k) => DR.codeword(ecc.spm, c.acc, k));
@@ -592,6 +597,13 @@
       ['Capacity (stack)', fmt(m.capacity, 3) + ' GB'],
       ['Bandwidth', tm ? fmt(tm.bw, 1) + ' GB/s' + (tm.bw < tm.bw_peak - 1e-9 ? ` <small>capped by bank groups (peak ${fmt(tm.bw_peak, 1)})</small>` : '') : '–'],
       ['Row-miss latency', tm ? fmt(tm.latency, 1) + ' ns <small>tCL+tRCD+tRP</small>' : '–'],
+      ...(tm ? [['tRAS / tRP / tRC', `${fmt(tm.tras, 1)} / ${fmt(tm.trp, 1)} / ${fmt(tm.trc, 1)} ns`]] : []),
+      ...(tm && m.p.prac ? (() => {
+        // the same design without PRAC, for the cost of counting
+        const off = DR.compute(Object.assign({}, m.p, { prac: 0 }), app.techKey).timing;
+        return [['PRAC counter update', `${fmt(tm.acu, 2)} ns <small>${fmt(DR.PRAC.acu_cycles, 1)} column cycles, after PRE</small>`],
+          ['PRAC cost', `tRP +${fmt(tm.trp - off.trp, 1)}, tRAS ${fmt(tm.tras - off.tras, 1)}, tRC +${fmt(tm.trc - off.trc, 1)} ns <small>latency +${fmt(100 * (tm.latency / off.latency - 1), 0)}%</small>`]];
+      })() : []),
       ['DQ rate', tm ? fmt(tm.dq_rate, 2) + ' Gb/s' : '–'],
       ...(tm ? [
         ['tCCD_L / tCCD_S', `${fmt(tm.tccdl, 2)} / ${fmt(tm.tccds, 2)} ns`],
@@ -626,8 +638,8 @@
     if (!ex.metric_e_per_bit_closed) $('metrics').insertAdjacentHTML('beforeend', '<div class="k" style="grid-column:1/-1;font-size:11.5px;margin-top:4px">Energy needs a DreamRAM export (tools/export_floorplan.py).</div>');
   }
 
-  const AREA_LAYERS = { cells: ['mat'], ecc: ['eccmat'], extrarow: ['extrarow', 'salpbuf'], blsa: ['blsa'], swd: ['swd'], rowdec: ['rowdec'], coldec: ['coldec'], dummy: ['dummy'], ctrl: ['ctrl'], ioctl: ['ioctl'], mbus: ['mbus'], tsv: ['tsvcmd', 'tsvdata', 'tsvother'] };
-  const AREA_COLOR = { cells: 'mat', ecc: 'eccmat', extrarow: 'extrarow', blsa: 'blsa', swd: 'swd', rowdec: 'rowdec', coldec: 'coldec', dummy: 'dummy', ctrl: 'ctrl', ioctl: 'ioctl', mbus: 'mbus', tsv: 'tsvdata' };
+  const AREA_LAYERS = { cells: ['mat'], ecc: ['eccmat'], prac: ['rhcells'], extrarow: ['extrarow', 'salpbuf'], blsa: ['blsa'], swd: ['swd'], rowdec: ['rowdec'], coldec: ['coldec'], dummy: ['dummy'], ctrl: ['ctrl'], ioctl: ['ioctl'], mbus: ['mbus'], tsv: ['tsvcmd', 'tsvdata', 'tsvother'] };
+  const AREA_COLOR = { cells: 'mat', ecc: 'eccmat', prac: 'rhcells', extrarow: 'extrarow', blsa: 'blsa', swd: 'swd', rowdec: 'rowdec', coldec: 'coldec', dummy: 'dummy', ctrl: 'ctrl', ioctl: 'ioctl', mbus: 'mbus', tsv: 'tsvdata' };
   function updateArea() {
     const P = DR.PALETTES[app.theme];
     const parts = DR.areaBreakdown(app.model);

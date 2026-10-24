@@ -76,12 +76,14 @@ PARAMS = ['sids', 'channels', 'ch_per_die', 'pch', 'horiz_bg', 'vert_bg', 'banks
           'gbus_tsv_sd', 'tsv_dq_sd', 'atom_size']
 EXTENSIONS = {'coupled_rows': 1, 'coupled_lsb': 0, 'edge_pairing': 0, 'ioctl_h': 0, 'channel_rows': 1, 'tccd_bgbus': 0,
               'tck_fixed': 1, 'tck_fixed_scale': 0, 'tck_wire': 1, 'bw_bg_cap': 0, 'tsv_chain': 0,
-              'tccd_staged': 0, 'mdl_share': 1, 'col_mid': 0, 'od_ecc_logic': 1}  # coupled_lsb only labels rows
+              'tccd_staged': 0, 'mdl_share': 1, 'col_mid': 0, 'od_ecc_logic': 1,
+              'prac': 0, 'prac_bits': 12}  # coupled_lsb only labels rows
 
 
 METRICS = ['capacity_gbytes', 'bw_gbytes', 'worst_latency_ns', 'metric_e_per_bit_closed',
            'metric_e_per_bit_seq', 'worst_power_w', 'total_area_mmmm', 'die_x_mm', 'die_y_mm', 'cell_eff',
-           'core_freq_ghz', 'dq_datarate_gbps', 'tcl', 'trcd', 'trp', 'tccdl', 'page_size_bytes']
+           'core_freq_ghz', 'dq_datarate_gbps', 'tcl', 'trcd', 'trp', 'tccdl', 'page_size_bytes',
+           'tras', 'trc', 'trtp', 'twr']
 
 
 @functools.lru_cache(maxsize=None)
@@ -119,7 +121,8 @@ def build(dreamram_dir, mem_json, tech_json, overrides, max_die_mm=None):
     Model = extended_hbm(Hbm, overrides.get('coupled_rows', 1), overrides.get('edge_pairing', 0), overrides.get('ioctl_h', 0),
                          overrides.get('channel_rows', 1), overrides.get('tccd_bgbus', 0),
                          **{k: overrides.get(k, EXTENSIONS[k]) for k in ('tck_fixed', 'tck_fixed_scale', 'tck_wire', 'bw_bg_cap', 'tsv_chain',
-                                                                         'tccd_staged', 'mdl_share', 'col_mid', 'od_ecc_logic')})
+                                                                         'tccd_staged', 'mdl_share', 'col_mid', 'od_ecc_logic',
+                                                                         'prac', 'prac_bits')})
 
     def make(p, ref, cls=Hbm):
         kw = dict(sids=p['sids'], channels=p['channels'], ch_per_die=p['ch_per_die'], pch=p['pch'],
@@ -256,9 +259,24 @@ def staged_reference(dreamram_dir, mem_json):
     return g, kappa
 
 
+# ---- per-row activation counting (prac) ---------------------------------------------------------------------
+# PRHT (Kim et al., SK hynix, ISSCC 2023, 28.8) / DDR5 PRAC: every activated row carries a counter in extra R/H cell
+# columns, and each activation does a read-modify-write of it (activation counter update, ACU: internal read through
+# an IOSA, +1, internal write). DDR5 runs the ACU after PRECHARGE, while the row finishes restoring, so tRP grows by
+# the ACU time and tRAS can end right after sensing. Calibrated on DDR5-3200AN (JESD79-5 speed bin vs Table 343):
+DDR5_PRAC = {'default': dict(trcd=15.0, trp=15.0, tras=32.0, trc=47.0, trtp=7.5, twr=30.0, tccdl=5.0),
+             'prac': dict(tras=16.0, trp=36.0, trc=52.0, trtp=5.0, twr=10.0)}
+PRAC = {
+    'acu_cycles': (DDR5_PRAC['prac']['trp'] - DDR5_PRAC['default']['trp']) / DDR5_PRAC['default']['tccdl'],  # 4.2 column cycles
+    'tras_floor': DDR5_PRAC['prac']['tras'] / DDR5_PRAC['default']['trcd'],  # tRAS >= tRCD x 16/15
+    'trtp_scale': DDR5_PRAC['prac']['trtp'] / DDR5_PRAC['default']['trtp'],
+    'twr_scale': DDR5_PRAC['prac']['twr'] / DDR5_PRAC['default']['twr'],
+}
+
+
 def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgbus=0,
                  tck_fixed=1, tck_fixed_scale=0, tck_wire=1, bw_bg_cap=0, tsv_chain=0,
-                 tccd_staged=0, mdl_share=1, col_mid=0, od_ecc_logic=1):
+                 tccd_staged=0, mdl_share=1, col_mid=0, od_ecc_logic=1, prac=0, prac_bits=12):
     """Hbm subclass adding coupled rows, edge-subarray pairing and an I/O-control height override
     (identical to Hbm when all are off)."""
     import numpy as np
@@ -392,6 +410,33 @@ def extended_hbm(Hbm, coupled, edge_pairing, ioctl_h=0, channel_rows=1, tccd_bgb
             return staged_times(g, ref, kappa, tech.logic_scale_conf, self.pumps_per_atom(), mdl_share, od_ecc_logic,
                                 self.mdl_bgbus_sd)
 
+        # PRAC: counter cells (prac_bits per independently activated row segment) widen every subarray row; they hold
+        # no data, so cell_area (and cell efficiency) leaves them out
+        def prac_width(self, tech):
+            return prac_bits * self.ind_row_pages() * self.isolation_cols_overhead * tech.pitch_bl if prac else 0.0
+
+        def bank_dims(self, tech):
+            x, y, cells = super().bank_dims(tech)
+            return x + self.prac_width(tech), y, cells
+
+        def acu_time(self, tech):
+            # counter read-modify-write on the bank's own column path: acu_cycles x one column cycle (one pump)
+            return PRAC['acu_cycles'] * (self.staged(tech)[0] if tccd_staged else self.bank_stage_tck(tech))
+
+        def trp(self, tech):
+            return super().trp(tech) + (self.acu_time(tech) if prac else 0)
+
+        def tras(self, tech):
+            t = super().tras(tech)
+            return max(PRAC['tras_floor'] * self.trcd(tech), t - self.acu_time(tech)) if prac else t
+
+        def trtp(self, tech):
+            return super().trtp(tech) * (PRAC['trtp_scale'] if prac else 1)
+
+        def twr(self, tech):
+            t = super().twr(tech)
+            return max(PRAC['twr_scale'] * t, t - self.acu_time(tech)) if prac else t
+
         def core_tck(self, tech):
             if tccd_staged:
                 # tCCD_L = core_tck x pumps (Hbm.tccdl) = max(pumps x bank cycle, shared stage per atom); every shared
@@ -463,6 +508,7 @@ def export(dram, tech, p, metrics, status):
             'total_area_mm2': f(dram.total_area(tech)),
             'tck_bank_stage': f(dram.bank_stage_tck(tech)) if hasattr(dram, 'bank_stage_tck') else None,
             'tck_bgbus_stage': f(dram.bgbus_stage_tck(tech)) if hasattr(dram, 'bgbus_stage_tck') else None,
+            **({'prac_acu_ns': f(dram.acu_time(tech)), 'prac_width_um': f(dram.prac_width(tech))} if p.get('prac') else {}),
             **({'staged_bank_ns': f(st[0]), 'staged_shared_ns': f(st[1]), 'staged_parts': {k: f(v) for k, v in {**st[2], **st[3]}.items()}}
                if getattr(dram, '_staged_ref', None) and (st := dram.staged(tech)) else {}),
         },
