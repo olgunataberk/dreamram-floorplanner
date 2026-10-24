@@ -711,7 +711,7 @@
     writeHash();
   }
 
-  // ---------- tabs: floorplan / timing ----------
+  // ---------- tabs: floorplan / timing / report ----------
   const timingState = { scenario: 'same_bg', theme: app.theme };
   function renderTimingTab() {
     if (app.tab !== 'timing' || !app.model) return;
@@ -721,16 +721,27 @@
   function setTab(tab) {
     app.tab = tab;
     document.body.classList.toggle('tab-timing', tab === 'timing');
+    document.body.classList.toggle('tab-report', tab === 'report');
     $('timing').hidden = tab !== 'timing';
+    $('report').hidden = tab !== 'report';
+    if (tab === 'report') DR.renderReport($('report'));
     document.querySelectorAll('.tabs [data-tab]').forEach((b) => {
       b.classList.toggle('on', b.dataset.tab === tab);
       b.setAttribute('aria-selected', String(b.dataset.tab === tab));
     });
     try { localStorage.setItem('dreamram-tab', tab); } catch (e) { /* storage unavailable */ }
     if (tab === 'timing') renderTimingTab();
-    else { R.resize(); app.requestDraw(); }
+    else if (tab === 'floorplan') { R.resize(); app.requestDraw(); }
   }
   document.querySelectorAll('.tabs [data-tab]').forEach((b) => (b.onclick = () => setTab(b.dataset.tab)));
+  // Report buttons open a bundled design in the floorplan (exSel is defined further down; clicks come later)
+  $('report').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-load]');
+    if (!b) return;
+    exSel.value = b.dataset.load;
+    exSel.onchange();
+    setTab('floorplan');
+  });
   new ResizeObserver(() => renderTimingTab()).observe($('timing'));
 
   // ---------- exports / examples ----------
@@ -786,14 +797,20 @@
     g32_low_latency_bankpath: '32G · bank path only · lowest latency (63 ns) · 256-WL MATs, BRVSA · 17.2 × 11.9 mm · 32.6 Gb/s',
     g32_2bg_64b_bankpath: '32G · bank path only · 2 BGs × 16 banks, 64 B access, coupled ×4 · 26.5 × 10.9 mm · 33.1 Gb/s',
     g32_2bg_staged_bank: '32G · staged, per-bank IOSA · 2 BGs × 8 banks, 64 B access, 4 TSVs / DQ · 14.3 × 10.5 mm · 32.2 Gb/s',
+    hbm4if_8g_mid: '8 Gb/s · smallest die · mid-bank decoder, 16 × 512-BL MATs · 8.6 × 14.6 mm · 125.6 mm²',
+    hbm4if_8g_bank: '8 Gb/s · 2nd smallest · coupled ×2, 2 channel rows · 7.2 × 17.8 mm · 127.0 mm²',
+    hbm4if_16g_bank: '16 Gb/s · smallest die · coupled ×2, 32 MDLs, 2 channel rows · 7.2 × 18.6 mm · 132.7 mm²',
+    hbm4if_16g_mid: '16 Gb/s · 2nd smallest · mid-bank decoder, 16 MDLs · 8.6 × 15.5 mm · 133.8 mm²',
   };
   exSel.innerHTML = '<option value="">Example designs…</option>'
-    + '<optgroup label="DreamRAM exports">' + Object.keys(EX).filter((k) => !k.startsWith('hbm5_') && !k.startsWith('g32_')).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
+    + '<optgroup label="DreamRAM exports">' + Object.keys(EX).filter((k) => !k.startsWith('hbm5_') && !k.startsWith('g32_') && !k.startsWith('hbm4if_')).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
     // HBM5: 16 channels/die, 4096 DQs, 2 bank groups × 8 banks, half the rows per channel of our HBM4,
     // evaluated with the BG-BUS-limited tCCD_L extension (README)
     + '<optgroup label="HBM5 exploration">' + Object.keys(exLabels).filter((k) => k.startsWith('hbm5_') && EX[k]).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
     // 32 data DQs per pseudo-channel at >= 32 Gb/s, 16 GB, from tools/sweep_pin_rate.py (README)
     + '<optgroup label="32 Gb/s exploration">' + Object.keys(exLabels).filter((k) => k.startsWith('g32_') && EX[k]).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
+    // HBM4 interface kept (2 PCs × 32 DQ, 32 B, 2 BGs × 8 banks), staged model, from tools/sweep_interface.py (README)
+    + '<optgroup label="HBM4 interface scaling (8 / 16 Gb/s)">' + Object.keys(exLabels).filter((k) => k.startsWith('hbm4if_') && EX[k]).map((k) => `<option value="ex:${k}">${exLabels[k] || k}</option>`).join('') + '</optgroup>'
     + '<optgroup label="Presets (in-browser model)">' + Object.entries(DR.DESIGN_PRESETS).map(([k, d]) => `<option value="pre:${k}">${d.label}</option>`).join('') + '</optgroup>';
   exSel.onchange = () => {
     const [kind, k] = exSel.value.split(':');
@@ -862,5 +879,5 @@
   R.resize();
   rebuild(false);
   ro.observe(cv);
-  try { if (localStorage.getItem('dreamram-tab') === 'timing') setTab('timing'); } catch (e) { /* storage unavailable */ }
+  try { const t = localStorage.getItem('dreamram-tab'); if (t === 'timing' || t === 'report') setTab(t); } catch (e) { /* storage unavailable */ }
 })();

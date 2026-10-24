@@ -25,6 +25,7 @@ Then open <http://localhost:8813/>. You can also open `index.html` directly from
 | Show / hide components | The **Components** panel, the legend of the die-area bar, or **Hide …** in the selection panel |
 | Labels on/off | **L** |
 | Column-read wave diagram | The **Timing** tab (see [below](#timing-tab)) |
+| HBM4 8 → 32 Gb/s study | The **Report** tab: the interface-scaling results, with buttons that open the bundled designs |
 
 Each level dims everything outside the focused component. Drawing switches automatically between level-of-detail stages, so the whole die (~100k MATs) stays responsive.
 
@@ -603,6 +604,15 @@ Reported but not used to filter:
 - **More groups at 32 B on 32 DQs works on paper but is costly.** It needs a 0.25 ns burst, 4–7 GBUS sets and an 8 GHz command bus at 100%. 8 groups adds 2× latency and power.
 - **64 B accesses halve the command-bus load.** That's the main interface argument for them beyond bank timing.
 
+**Bundled designs** (**Example designs → HBM4 interface scaling**). These are the two smallest distinct organisations at 8 and 16 Gb/s that keep the HBM4 interface. All use per-bank IOSAs, TSVs at 8 Gb/s each (1 per DQ at 8 Gb/s, 2 per DQ at 16 Gb/s), and a 20 mm die limit:
+
+| | 8 Gb/s, smallest | 8 Gb/s, 2nd | 16 Gb/s, smallest | 16 Gb/s, 2nd |
+| --- | --- | --- | --- | --- |
+| Organisation | 16 × 1024-WL subarrays, 16 × 512-BL MATs, 8 MDLs, mid-bank decoder | 8 × 1024-WL, 16 × 1024-BL coupled ×2, 16 MDLs, 2 channel rows | 8 × 1024-WL, 16 × 1024-BL coupled ×2, 32 MDLs, 2 channel rows | 16 × 1024-WL, 16 × 512-BL, 16 MDLs, mid-bank decoder |
+| tCCD_L (needed) | 1.73 (2.00) ns | 1.88 (2.00) | 0.94 (1.00) | 0.84 (1.00) |
+| Die | 8.62 × 14.58 = 125.6 mm² | 7.15 × 17.77 = 127.0 | 7.15 × 18.55 = 132.7 | 8.62 × 15.53 = 133.8 |
+| Row-miss latency | 100 ns | 115 | 119 | 126 |
+
 **Package friendliness.** The sweep also places a die's channels in one row (DreamRAM) or two (`channel_rows`, as in Samsung's HBM4). It reports each die's aspect ratio (long side / short side; the JEDEC HBM4 footprint is 1.29), the squarest passing die within `--area-slack` (10%) of the smallest, and drops dies above `--max-aspect`. The smallest passing dies are long and thin, up to 2.8 : 1. Picking the channel and bank-group arrangement for shape costs about 10–20% area. At 32 Gb/s with aspect ≤ 1.3, the designs that pass under every IOSA placement are:
 - 4 PCs × 16 DQ with 4 groups: 158.0 mm², 14.30 × 11.05 mm, 85 ns;
 - 64 B with 4 groups: 160.5 mm², 14.30 × 11.22 mm, 142 ns.
@@ -654,6 +664,7 @@ js/floorplan.js    lazy hierarchy of placed rectangles (µm)
 js/render.js       canvas renderer, LOD, wiring, TSVs, stack view, hit-testing
 js/app.js          UI: navigation, tree, components, parameters, metrics, exports
 js/timing.js       Timing tab: column-read wave diagram (SVG)
+js/report.js       Report tab: HBM4 interface-scaling study
 js/examples.js     bundled DreamRAM exports (generated)
 tools/export_floorplan.py   export a design's geometry + metrics from DreamRAM
 tools/build_examples.py     bundle examples/*.json into js/examples.js
