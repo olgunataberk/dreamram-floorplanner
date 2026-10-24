@@ -4,7 +4,9 @@ What sets the cost of per-row activation counting, and of the on-die ECC it may 
 
 Takes bundled designs (examples/*.json), turns on the structural PRAC model (prac_model = 1) and changes one design
 decision at a time from a base: update after PRE on a per-bank path with an unprotected 12-bit counter. Reports the
-activation counter update (ACU) by component and what it does to tRP / tRAS / tRC, row-miss latency and die area.
+activation counter update (ACU) by component and what it does to tRP / tRAS / tRC, the row-miss penalty (tRP + tRCD,
+what a row miss costs over a hit), the row-miss latency to first data (tCL + tRCD + tRP) and die area. Percentages are
+against the same design without PRAC; PRAC acts on the penalty, so that is where its share shows.
 A second table varies the structural OD-ECC engine (symbol size, correction strength, codewords, decoder location,
 pipelining) on the staged column-cycle model and reports the ECC stage, tCCD_L, pin rate and area.
 
@@ -72,6 +74,29 @@ def evaluate(a, name, over):
     return r
 
 
+def study(a, designs):
+    """Structured results for each design: the design without PRAC, every PRAC case and every OD-ECC engine."""
+    keep = ('tras', 'trp', 'trc', 'trcd', 'tcl', 'worst_latency_ns', 'tccdl', 'dq_datarate_gbps', 'die', 'ioctl', 'acu',
+            'ecc_ns', 'gates', 'fault')
+    pick = lambda r: {k: (float(r[k]) if not isinstance(r[k], str) else r[k]) for k in keep if k in r}  # noqa: E731
+    out = []
+    for name in designs:
+        off = evaluate(a, name, dict(prac=0))
+        prac = []
+        for label, over in PRAC_CASES:
+            r = evaluate(a, name, dict(BASE, **over))
+            row = dict(label=label, **(pick(r) if r else {'discarded': True}))
+            if r and r.get('parts'):
+                row['parts'] = {k: float(v) for k, v in r['parts'].items()}
+            prac.append(row)
+        ecc = []
+        for label, over in ECC_CASES:
+            r = evaluate(a, name, dict(prac=0, tccd_staged=1, mdl_share=0, **over))
+            ecc.append(dict(label=label, **(pick(r) if r else {'discarded': True})))
+        out.append(dict(name=name, off=pick(off), prac=prac, ecc=ecc))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--dreamram', required=True)
@@ -80,36 +105,34 @@ def main():
     a = ap.parse_args()
     a.dreamram = os.path.abspath(a.dreamram)
     f = lambda v, n=1: f'{v:.{n}f}'  # noqa: E731
+    pct = lambda v, b, n=0: f"{'+' if v >= b else ''}{f(100 * (v / b - 1), n)}%"  # noqa: E731
     out = []
-    for name in a.designs.split(','):
-        off = evaluate(a, name, dict(prac=0))
-        out.append(f'\n### {name}: PRAC design decisions\n')
-        out.append('| Case | ACU (ns) | of which: restore / queue / path | tRAS | tRP | tRC | Row-miss latency | Die |')
-        out.append('| --- | --- | --- | --- | --- | --- | --- | --- |')
-        for label, over in PRAC_CASES:
-            r = evaluate(a, name, dict(BASE, **over))
-            if not r:
-                out.append(f'| {label} | discarded | | | | | | |')
+    for d in study(a, a.designs.split(',')):
+        off = d['off']
+        pen0 = off['trp'] + off['trcd']
+        out.append(f"\n### {d['name']}: PRAC design decisions\n")
+        out.append('| Case | ACU (ns) | of which: restore / queue / path | tRAS | tRP | tRC | Row-miss penalty | Row-miss latency | Die |')
+        out.append('| --- | --- | --- | --- | --- | --- | --- | --- | --- |')
+        for r in d['prac']:
+            if r.get('discarded'):
+                out.append(f"| {r['label']} | discarded | | | | | | | |")
                 continue
             pp = r.get('parts') or {}
             split = f"{f(pp['restore'])} / {f(pp['queue'])} / {f(r['acu'] - pp['restore'] - pp['queue'])}" if pp else ''
-            out.append(f"| {label} | {f(r['acu']) if 'acu' in r else '-'} | {split} | {f(r['tras'])} | {f(r['trp'])} | {f(r['trc'])} | "
-                       f"{f(r['worst_latency_ns'])} ({'+' if r['worst_latency_ns'] >= off['worst_latency_ns'] else ''}"
-                       f"{f(100 * (r['worst_latency_ns'] / off['worst_latency_ns'] - 1), 0)}%) | "
-                       f"{f(r['die'], 2)} mm² ({'+' if r['die'] >= off['die'] else ''}{f(100 * (r['die'] / off['die'] - 1), 2)}%) |")
-        out.append(f'\n### {name}: OD-ECC engine (staged tCCD_L, per-bank IOSA)\n')
+            pen = r['trp'] + r['trcd']
+            out.append(f"| {r['label']} | {f(r['acu']) if 'acu' in r else '-'} | {split} | {f(r['tras'])} | {f(r['trp'])} | {f(r['trc'])} | "
+                       f"{f(pen)} ({pct(pen, pen0)}) | {f(r['worst_latency_ns'])} ({pct(r['worst_latency_ns'], off['worst_latency_ns'])}) | "
+                       f"{f(r['die'], 2)} mm² ({pct(r['die'], off['die'], 2)}) |")
+        out.append(f"\n### {d['name']}: OD-ECC engine (staged tCCD_L, per-bank IOSA)\n")
         out.append('| Engine | Gates per engine | ECC stage | tCCD_L | Pin rate | I/O control | Die | Corrects a driver fault |')
         out.append('| --- | --- | --- | --- | --- | --- | --- | --- |')
-        ref = None
-        for label, over in ECC_CASES:
-            r = evaluate(a, name, dict(prac=0, tccd_staged=1, mdl_share=0, **over))
-            if not r:
-                out.append(f'| {label} | discarded | | | | | | |')
+        ref = next((r for r in d['ecc'] if not r.get('discarded')), None)
+        for r in d['ecc']:
+            if r.get('discarded'):
+                out.append(f"| {r['label']} | discarded | | | | | | |")
                 continue
-            ref = ref or r
-            out.append(f"| {label} | {f(r['gates'] / 1000)}k | {f(r['ecc_ns'], 2)} ns | {f(r['tccdl'], 2)} ns | "
-                       f"{f(r['dq_datarate_gbps'])} Gb/s | {f(r['ioctl'])} µm | {f(r['die'], 2)} mm² "
-                       f"({'+' if r['die'] >= ref['die'] else ''}{f(100 * (r['die'] / ref['die'] - 1), 1)}%) | {r['fault']} |")
+            out.append(f"| {r['label']} | {f(r['gates'] / 1000)}k | {f(r['ecc_ns'], 2)} ns | {f(r['tccdl'], 2)} ns | "
+                       f"{f(r['dq_datarate_gbps'])} Gb/s | {f(r['ioctl'])} µm | {f(r['die'], 2)} mm² ({pct(r['die'], ref['die'], 1)}) | {r['fault']} |")
     text = '\n'.join(out)
     print(text)
     if a.md:

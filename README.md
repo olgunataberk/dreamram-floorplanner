@@ -27,6 +27,7 @@ Then open <http://localhost:8813/>. You can also open `index.html` directly from
 | Column-read wave diagram | The **Timing** tab (see [below](#timing-tab)) |
 | HBM4 8 → 32 Gb/s study | The **Report** tab: the interface-scaling results, with buttons that open the bundled designs |
 | 64 B design space at 32 Gb/s | The **Design space** tab: every passing design by power, area, cell efficiency and fault coverage, and the ones within the JEDEC footprint |
+| PRAC study | The **PRAC** tab: what each per-row activation counting decision costs in row-miss penalty, on bundled designs and HBM5 |
 
 Each level dims everything outside the focused component. Drawing switches automatically between level-of-detail stages, so the whole die (~100k MATs) stays responsive.
 
@@ -684,19 +685,19 @@ PRHT (Kim et al., SK hynix, ISSCC 2023, 28.8) and DDR5's PRAC both keep an activ
 - **tRAS** = max(tRCD × 16/15, tRAS − ACU), because the restore overlaps the ACU.
 - **tRC** = tRAS + tRP.
 - **tRTP** × 2/3 and **tWR** = max(tWR / 3, tWR − ACU).
-- Row-miss latency (tCL + tRCD + tRP) grows by the ACU.
+- The row-miss penalty (tRP + tRCD, what a row miss costs over a hit) and the row-miss latency to first data (tCL + tRCD + tRP) both grow by the ACU. PRAC never changes tCL, so its share shows in the penalty.
 
 With PRAC enabled, DDR5-3200 itself comes out at its Table 343 values: tRAS 16, tRP 36, tRC 52 ns.
 
-| Design | ACU | tRAS | tRP | tRC | Row-miss latency |
-| --- | --- | --- | --- | --- | --- |
-| HBM3 baseline | 8.4 ns | 27.0 → 19.2 | 18.0 → 26.4 | 45.0 → 45.6 | 64.0 → 72.4 ns (+13%) |
-| HBM4 1 SID, coupled | 8.1 | 27.0 → 19.2 | 18.0 → 26.1 | 45.0 → 45.3 | 63.7 → 71.8 (+13%) |
-| 16 Gb/s, HBM4 footprint | 3.2 | 19.6 → 16.5 | 17.8 → 21.0 | 37.5 → 37.5 | 63.4 → 66.6 (+5%) |
-| 32G, 64 B, 5% of footprint | 3.4 | 26.8 → 23.4 | 17.8 → 21.2 | 44.7 → 44.7 | 73.5 → 76.9 (+5%) |
+| Design | ACU | tRAS | tRP | tRC | Row-miss penalty | Row-miss latency |
+| --- | --- | --- | --- | --- | --- | --- |
+| HBM3 baseline | 8.4 ns | 27.0 → 19.2 | 18.0 → 26.4 | 45.0 → 45.6 | 36.0 → 44.4 ns (+23%) | 64.0 → 72.4 ns (+13%) |
+| HBM4 1 SID, coupled | 8.1 | 27.0 → 19.2 | 18.0 → 26.1 | 45.0 → 45.3 | 36.0 → 44.1 (+23%) | 63.7 → 71.8 (+13%) |
+| 16 Gb/s, HBM4 footprint | 3.2 | 19.6 → 16.5 | 17.8 → 21.0 | 37.5 → 37.5 | 28.5 → 31.6 (+11%) | 63.4 → 66.6 (+5%) |
+| 32G, 64 B, 5% of footprint | 3.4 | 26.8 → 23.4 | 17.8 → 21.2 | 44.7 → 44.7 | 35.7 → 39.1 (+10%) | 73.5 → 76.9 (+5%) |
 
 - **HBM's column path is 2.5–6× faster than DDR5's, so the counter update is short.** It fits almost entirely under the cell restore, and tRC barely moves.
-- **The cost of counting is row-miss latency.** It's +13% at HBM3/HBM4 speeds, and +5% on the fast-column 16 and 32 Gb/s designs.
+- **The cost of counting is the row-miss penalty.** In this model it's +23% at HBM3/HBM4 speeds and +10–11% on the fast-column 16 and 32 Gb/s designs (+13% and +5% of the latency to first data). The structural model below shows this ratio model is optimistic.
 - **The counter columns add 0.4–0.6 µm per bank,** under 0.05% of the die.
 
 The **Timing** tab's **Row cycle (PRAC)** view draws one activation without and with PRAC: ACT, RD, PRE, the counter's IRD / +1 / IWR, the bitline precharge and the next ACT, with the DDR5 reference table. The metrics panel shows tRAS / tRP / tRC and, with PRAC on, the ACU and its cost against the same design without it. The extra refreshes PRHT issues to mitigate aggressors (counter reset + neighbour refresh) depend on the access pattern and are not modelled.
@@ -735,28 +736,28 @@ python3 tools/prac_study.py --dreamram /path/to/DreamRAM [--designs hbm3_baselin
   - inside the OD-ECC codeword. That means a full-codeword read, decode, re-encode and write, and it forces the shared path unless every bank has its own decoder.
 - Logic per counter path: counter IOSA + write driver per bit, incrementer (21 gates per 8 bits, after Chronus's decrementer), threshold comparator, and PRHT's count and three row-address latches. It's added to the I/O control.
 
-**What drives the cost** (HBM4 1 SID, coupled; HBM5 2 groups × 8 banks, smallest die):
+**What drives the cost** (HBM4 1 SID, coupled; HBM5 2 groups × 8 banks, smallest die). Percentages are on the row-miss penalty, tRP + tRCD; latency to first data is in brackets:
 
-| Decision | HBM4 counter update | HBM4 tRP / tRC | HBM4 row-miss latency | HBM5 row-miss latency | Die |
+| Decision | HBM4 counter update | HBM4 tRP / tRC | HBM4 row-miss penalty | HBM5 row-miss penalty | Die |
 | --- | --- | --- | --- | --- | --- |
-| No PRAC | — | 18.0 / 45.0 ns | 63.7 ns | 82.5 ns | — |
-| DDR5 ratio (previous model) | 8.1 ns | 26.1 / 45.3 | +13% | +9% | +0.04% |
-| After PRE, per-bank path, no protection | 20.7 (restore 18.6) | 38.7 / 57.9 | **+33%** | **+41%** (restore 32.2) | +0.1% |
+| No PRAC | — | 18.0 / 45.0 ns | 36.0 ns (latency 63.7) | 53.1 ns (latency 82.5) | — |
+| DDR5 ratio (previous model) | 8.1 ns | 26.1 / 45.3 | +23% (+13%) | +14% (+9%) | +0.04% |
+| After PRE, per-bank path, no protection | 20.7 (restore 18.6) | 38.7 / 57.9 | **+58%** (+33%) | **+64%** (+41%; restore 32.2) | +0.1% |
 | … while the row is open (PRHT) | 20.7 | 18.0 / 56.7 | +0% | +0% | +0.1% |
-| … counter subarray (Chronus) | 7.3 (restore 5.2) | 18.0 / 45.0 | +1% | +0% | +1.2% |
-| … shared I/O-control path | 65.2 (queue 40.8) | 83.2 / 102.4 | **+102%** | +86% | +0.05% |
-| … parity / own SEC-DED | 21.2 / 21.3 | 39.2 / 39.3 | +33 / 34% | +42% | +0.1–0.2% |
-| … inside OD-ECC codeword, bank-group decoder | 75.1 (queue 49.4) | 93.1 / 112.3 | **+118%** | +98% | +0.08% |
-| … inside OD-ECC codeword, per-bank decoders | 22.0 | 40.0 / 59.2 | +35% | +43% | +1.1% |
-| … inside the HBM4 16-bit-symbol codeword | 76.8 | 94.9 / 114.1 | +121% | +100% | +0.2% |
+| … counter subarray (Chronus) | 7.3 (restore 5.2) | 18.0 / 45.0 | +0% (+1%) | +0% | +1.2% |
+| … shared I/O-control path | 65.2 (queue 40.8) | 83.2 / 102.4 | **+181%** (+102%) | +134% (+86%) | +0.05% |
+| … parity / own SEC-DED | 21.2 / 21.3 | 39.2 / 39.3 | +59% (+33 / 34%) | +65% (+42%) | +0.1–0.2% |
+| … inside OD-ECC codeword, bank-group decoder | 75.1 (queue 49.4) | 93.1 / 112.3 | **+208%** (+118%) | +152% (+98%) | +0.08% |
+| … inside OD-ECC codeword, per-bank decoders | 22.0 | 40.0 / 59.2 | +61% (+35%) | +67% (+43%) | +1.1% |
+| … inside the HBM4 16-bit-symbol codeword | 76.8 | 94.9 / 114.1 | +213% (+121%) | +156% (+100%) | +0.2% |
 
 - **The counter cells' write recovery dominates, and it does not scale with the column path.** HBM's column cycle is 2.5–6× DDR5's, but the counter still has to be written into cells and restored before the wordline closes. Built bottom-up, the update on HBM3 is 21.5 ns, essentially DDR5's 21 ns. The DDR5-ratio model gave 8.4 ns.
-- **Tall MATs make it worse.** The HBM5 design uses 1024-wordline MATs, so its bitlines restore in 32 ns instead of 18.6, and row-miss latency grows 41% with the simplest PRAC.
-- **Sharing is what multiplies it.** If counter traffic must use the bank group's I/O control, the worst case is an all-bank PRECHARGE that queues the group's other banks. In the 8-bank groups of HBM4/HBM5 that's 7 more updates: tRP 83–110 ns, row-miss latency about 2×. Two things force that path:
+- **Tall MATs make it worse.** The HBM5 design uses 1024-wordline MATs, so its bitlines restore in 32 ns instead of 18.6, and the row-miss penalty grows 64% with the simplest PRAC.
+- **Sharing is what multiplies it.** If counter traffic must use the bank group's I/O control, the worst case is an all-bank PRECHARGE that queues the group's other banks. In the 8-bank groups of HBM4/HBM5 that's 7 more updates: tRP 83–110 ns, a row-miss penalty 2.3–3× that without PRAC. Two things force that path:
   - IOSAs placed at the I/O control, as in HBM3's organisation, with no per-bank counter path;
   - counters protected by an OD-ECC codeword that is only decoded per bank group.
 - **Protection itself is cheap.** Parity or a small SEC-DED adds 0.5–0.7 ns. Even the full codeword decode and re-encode adds only 1.2–1.5 ns when every bank has its own decoder, at +1–1.7% die. It's the location of the decoder that costs.
-- **Hiding the update costs either tRC or area.** PRHT's in-row update leaves latency alone but adds 11–19 ns to tRC. A Chronus counter subarray hides it entirely. This model charges it a dedicated BLSA stripe per bank, +1.2–1.6% die; Chronus reports < 0.1% with CACTI, which suggests sharing a neighbour's stripe.
+- **Hiding the update costs either tRC or area.** PRHT's in-row update leaves the penalty alone but adds 11–19 ns to tRC. A Chronus counter subarray hides it entirely. This model charges it a dedicated BLSA stripe per bank, +1.2–1.6% die; Chronus reports < 0.1% with CACTI, which suggests sharing a neighbour's stripe.
 
 **OD-ECC at 32 Gb/s** (the bundled 64 B, 5%-footprint design, staged tCCD_L):
 
@@ -775,7 +776,7 @@ python3 tools/prac_study.py --dreamram /path/to/DreamRAM [--designs hbm3_baselin
 
 Not modelled: energy of the counter update; PRHT/RFM refresh traffic; the area of extra GBUS sets; a counter-restore boost (a stronger write driver or partial restore) that would shorten the dominant term.
 
-### HBM5 with 2× channels per die: PRAC and row-miss latency
+### HBM5 with 2× channels per die: PRAC and the row-miss penalty
 
 ```bash
 python3 tools/hbm5_study.py --dreamram /path/to/DreamRAM [--rates 8,16] [--ecc-sym 16] [--ecc-pipe 1]
@@ -791,41 +792,42 @@ Every die organisation from `tools/sweep_interface.py` is timed with the staged 
 | --- | --- | --- |
 | Passing designs (I/O-control IOSA / per bank / mid-bank decoder) | 21 / 169 / 185 | 32 / 98 / 98 |
 | Package-friendly die | 13.24 × 11.56 = 153.0 mm² | 14.30 × 12.26 = 175.3 mm² (+15%) |
-| Row-miss latency, no PRAC | 88.0 ns | 99.8 ns |
+| Row-miss penalty (tRP + tRCD), no PRAC | 40.8 ns | 35.7 ns |
+| Row-miss latency (tCL + tRCD + tRP), no PRAC | 88.0 ns | 99.8 ns |
 
 PRAC on the HBM5 package-friendly design, with IOSAs at the I/O control as in HBM4:
 
-| PRAC | Counter update | tRAS / tRP / tRC | Row-miss latency | Die |
-| --- | --- | --- | --- | --- |
-| No PRAC | — | 26.8 / 17.8 / 44.7 ns | 99.8 ns | 175.3 mm² |
-| DDR5 ratio | 6.7 ns | 20.1 / 24.6 / 44.7 | 106.5 (+7%) | +0.0% |
-| After PRE, per-bank counter path | 20.4 | 19.0 / 38.2 / 57.2 | 120.2 (+20%) | +0.2% |
-| While the row is open (PRHT) | 20.4 | 38.2 / 17.8 / 56.0 | 99.8 (+0%) | +0.2% |
-| Counter subarray (Chronus) | 6.9 | 26.8 / 17.8 / 44.7 | 101.1 (+1%) | +2.2% |
-| After PRE, shared I/O-control path | 43.6 | 19.0 / 61.4 / 80.4 | 143.3 (+44%) | +0.1% |
-| Inside the OD-ECC codeword, bank-group decoder | 55.3 | 19.0 / 73.1 / 92.1 | 155.1 (+55%) | +0.2% |
-| Inside the OD-ECC codeword, per-bank decoders | 21.8 | 19.0 / 39.7 / 58.7 | 123.7 (+24%) | +3.3% |
+| PRAC | Counter update | tRAS / tRP / tRC | Row-miss penalty | Row-miss latency | Die |
+| --- | --- | --- | --- | --- | --- |
+| No PRAC | — | 26.8 / 17.8 / 44.7 ns | 35.7 ns | 99.8 ns | 175.3 mm² |
+| DDR5 ratio | 6.7 ns | 20.1 / 24.6 / 44.7 | 42.4 (+19%) | 106.5 (+7%) | +0.0% |
+| After PRE, per-bank counter path | 20.4 | 19.0 / 38.2 / 57.2 | 56.0 (**+57%**) | 120.2 (+20%) | +0.2% |
+| While the row is open (PRHT) | 20.4 | 38.2 / 17.8 / 56.0 | 35.7 (+0%) | 99.8 (+0%) | +0.2% |
+| Counter subarray (Chronus) | 6.9 | 26.8 / 17.8 / 44.7 | 35.7 (+0%) | 101.1 (+1%) | +2.2% |
+| After PRE, shared I/O-control path | 43.6 | 19.0 / 61.4 / 80.4 | 79.3 (**+122%**) | 143.3 (+44%) | +0.1% |
+| Inside the OD-ECC codeword, bank-group decoder | 55.3 | 19.0 / 73.1 / 92.1 | 90.9 (**+155%**) | 155.1 (+55%) | +0.2% |
+| Inside the OD-ECC codeword, per-bank decoders | 21.8 | 19.0 / 39.7 / 58.7 | 57.5 (+61%) | 123.7 (+24%) | +3.3% |
 
-HBM4's package-friendly design shows the same pattern: +23% after PRE, +50% on a shared path, +63% inside a bank-group-decoded codeword.
+HBM4's package-friendly design (penalty 40.8 ns) shows the same pattern: +50% after PRE, +107% on a shared path, +135% inside a bank-group-decoded codeword.
 
 **16 Gb/s:**
 - **Nothing passes with HBM4's ECC as is.** The 16-bit-symbol decode takes 1.01 ns at this node, more than the 1.0 ns each bank group has per access (two groups × 0.5 ns bursts). Every design tops out at 15.8 Gb/s, HBM4 and HBM5 alike.
 - **Two fixes work.** Split the ECC into two pipeline stages, or use HBM3's 8-bit symbols (0.84 ns). Then 71 (per-bank IOSA) and 91 (mid-bank decoder) HBM5 designs pass.
 - **IOSAs at the I/O control never pass** (≤ 10.8 Gb/s): the bank cycle itself is too slow.
 
-The HBM5 package-friendly design is the same organisation at 14.30 × 12.91 mm = 184.7 mm², with twice the TSVs. With a two-stage ECC and an IOSA per bank, row-miss latency is 80.4 ns without PRAC:
-- +25% after PRE on a per-bank path;
+The HBM5 package-friendly design is the same organisation at 14.30 × 12.91 mm = 184.7 mm², with twice the TSVs. With a two-stage ECC and an IOSA per bank, its row-miss penalty is 35.7 ns without PRAC (80.4 ns to first data). With PRAC:
+- +57% after PRE on a per-bank path;
 - +0% while the row is open, with tRC 44.7 → 56.0 ns;
-- +1% with a counter subarray, at +2.1% die;
-- +54% on a shared path;
-- +69% inside a bank-group-decoded codeword;
-- +29% with per-bank decoders.
+- +0% with a counter subarray, at +2.1% die;
+- +122% on a shared path;
+- +155% inside a bank-group-decoded codeword;
+- +61% with per-bank decoders.
 
 What carries over from the PRAC study:
 - **The 18.6 ns counter-cell restore sets the floor.** The update can't be shorter than about 20 ns unless it moves to a counter subarray.
 - **The cost is mostly about sharing.** Any decision that routes counters through the bank group's I/O control turns an all-bank precharge into seven queued updates.
 
-Row-miss latencies are not comparable across rates for the same organisation (99.8 ns at 8 Gb/s, 80.4 at 16). DreamRAM's tCL grows with the TSV serialisation, and the 16 Gb/s designs use twice the TSVs.
+Row-miss latencies to first data are not comparable across rates for the same organisation (99.8 ns at 8 Gb/s, 80.4 at 16). DreamRAM's tCL grows with the TSV serialisation, and the 16 Gb/s designs use twice the TSVs. The row-miss penalty has no tCL in it, and it's the same 35.7 ns at both rates.
 
 ## Drawing choices (not specified by DreamRAM)
 
@@ -857,6 +859,8 @@ js/timing.js       Timing tab: column-read wave diagram (SVG)
 js/report.js       Report tab: HBM4 interface-scaling study
 js/designspace.js  Design space tab: 64 B / 32 Gb/s scatter plots
 js/designspace_data.js  its data (generated)
+js/prac.js         PRAC tab: per-row activation counting study
+js/prac_data.js    its data (generated)
 js/examples.js     bundled DreamRAM exports (generated)
 tools/export_floorplan.py   export a design's geometry + metrics from DreamRAM
 tools/build_examples.py     bundle examples/*.json into js/examples.js
@@ -866,5 +870,6 @@ tools/sweep_interface.py    HBM4 interface scaling 8-32 Gb/s and interface-break
 tools/build_designspace.py  builds js/designspace_data.js (64 B / 32 Gb/s designs) for the Design space tab
 tools/prac_study.py         PRAC and OD-ECC design-decision study on bundled designs
 tools/hbm5_study.py         HBM5 (2x channels per die) search at 8 / 16 Gb/s with PRAC configurations
+tools/build_prac_data.py    builds js/prac_data.js (both studies) for the PRAC tab
 configs/tech/*.json         DreamRAM tech configs for the HBM4 array and the 20 nm HBM2 cross-check
 ```

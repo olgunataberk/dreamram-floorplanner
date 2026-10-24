@@ -600,7 +600,8 @@
     const rows = [
       ['Capacity (stack)', fmt(m.capacity, 3) + ' GB'],
       ['Bandwidth', tm ? fmt(tm.bw, 1) + ' GB/s' + (tm.bw < tm.bw_peak - 1e-9 ? ` <small>capped by bank groups (peak ${fmt(tm.bw_peak, 1)})</small>` : '') : '–'],
-      ['Row-miss latency', tm ? fmt(tm.latency, 1) + ' ns <small>tCL+tRCD+tRP</small>' : '–'],
+      ['Row-miss penalty', tm ? fmt(tm.trp + tm.trcd, 1) + ' ns <small>tRP+tRCD, over a row hit</small>' : '–'],
+      ['Row-miss latency', tm ? fmt(tm.latency, 1) + ' ns <small>tCL+tRCD+tRP, to first data</small>' : '–'],
       ...(tm ? [['tRAS / tRP / tRC', `${fmt(tm.tras, 1)} / ${fmt(tm.trp, 1)} / ${fmt(tm.trc, 1)} ns`]] : []),
       ...(tm && m.p.prac ? (() => {
         // the same design without PRAC, for the cost of counting
@@ -609,7 +610,7 @@
           ? `restore ${fmt(tm.prac_parts.restore, 1)}${tm.prac_parts.queue ? ` + queue ${fmt(tm.prac_parts.queue, 1)}` : ''} + path ${fmt(tm.acu - tm.prac_parts.restore - tm.prac_parts.queue, 1)}, ${tm.prac_after_pre ? 'after PRE' : 'before PRE'}`
           : `${fmt(DR.PRAC.acu_cycles, 1)} column cycles, after PRE`;
         return [['PRAC counter update', `${fmt(tm.acu, 2)} ns <small>${how}</small>`],
-          ['PRAC cost', `tRP +${fmt(tm.trp - off.trp, 1)}, tRAS ${fmt(tm.tras - off.tras, 1)}, tRC +${fmt(tm.trc - off.trc, 1)} ns <small>latency +${fmt(100 * (tm.latency / off.latency - 1), 0)}%</small>`]];
+          ['PRAC cost', `tRP +${fmt(tm.trp - off.trp, 1)}, tRAS ${fmt(tm.tras - off.tras, 1)}, tRC +${fmt(tm.trc - off.trc, 1)} ns <small>penalty +${fmt(100 * ((tm.trp + tm.trcd) / (off.trp + off.trcd) - 1), 0)}%, latency +${fmt(100 * (tm.latency / off.latency - 1), 0)}%</small>`]];
       })() : []),
       ['DQ rate', tm ? fmt(tm.dq_rate, 2) + ' Gb/s' : '–'],
       ...(tm ? [
@@ -742,12 +743,14 @@
   function setTab(tab) {
     app.tab = tab;
     document.body.classList.toggle('tab-timing', tab === 'timing');
-    document.body.classList.toggle('tab-report', tab === 'report' || tab === 'design');
+    document.body.classList.toggle('tab-report', tab === 'report' || tab === 'design' || tab === 'prac');
     $('timing').hidden = tab !== 'timing';
     $('report').hidden = tab !== 'report';
     $('design').hidden = tab !== 'design';
+    $('prac').hidden = tab !== 'prac';
     if (tab === 'report') DR.renderReport($('report'));
     if (tab === 'design') DR.renderDesignSpace($('design'));
+    if (tab === 'prac') DR.renderPrac($('prac'), app.theme);
     document.querySelectorAll('.tabs [data-tab]').forEach((b) => {
       b.classList.toggle('on', b.dataset.tab === tab);
       b.setAttribute('aria-selected', String(b.dataset.tab === tab));
@@ -877,6 +880,7 @@
     try { localStorage.setItem('dreamram-theme', app.theme); } catch (e) { /* storage unavailable */ }
     renderLayers(); updateArea(); renderTree(); renderInfo(); renderTimingTab(); app.requestDraw();
     if (app.tab === 'design') DR.renderDesignSpace($('design')); // plot colours come from the theme tokens
+    if (app.tab === 'prac') DR.renderPrac($('prac'), app.theme);
   };
 
   // ---------- URL hash keeps the design shareable ----------
@@ -908,5 +912,5 @@
   R.resize();
   rebuild(false);
   ro.observe(cv);
-  try { const t = localStorage.getItem('dreamram-tab'); if (['timing', 'report', 'design'].includes(t)) setTab(t); } catch (e) { /* storage unavailable */ }
+  try { const t = localStorage.getItem('dreamram-tab'); if (['timing', 'report', 'design', 'prac'].includes(t)) setTab(t); } catch (e) { /* storage unavailable */ }
 })();

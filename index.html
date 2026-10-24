@@ -6,7 +6,7 @@
   <title>DreamRAM Floorplan Viewer</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css?v=40">
+  <link rel="stylesheet" href="css/style.css?v=43">
 </head>
 <body>
   <header class="topbar">
@@ -16,6 +16,7 @@
       <button role="tab" data-tab="timing" aria-selected="false">Timing</button>
       <button role="tab" data-tab="report" aria-selected="false">Report</button>
       <button role="tab" data-tab="design" aria-selected="false">Design space</button>
+      <button role="tab" data-tab="prac" aria-selected="false">PRAC</button>
     </div>
     <button id="btn-up" class="icon-btn" title="Up one level (Backspace / Esc)">↑ Up</button>
     <nav id="crumbs" class="crumbs"></nav>
@@ -44,6 +45,7 @@
       <div id="timing" class="timing" hidden></div>
       <div id="report" class="report" hidden></div>
       <div id="design" class="report" hidden></div>
+      <div id="prac" class="report" hidden></div>
     </div>
 
     <aside class="panel right">
@@ -83,14 +85,16 @@
     </aside>
   </main>
 
-  <script src="js/model.js?v=40"></script>
-  <script src="js/floorplan.js?v=40"></script>
-  <script src="js/render.js?v=40"></script>
-  <script src="js/timing.js?v=40"></script>
-  <script src="js/report.js?v=40"></script>
-  <script src="js/designspace_data.js?v=40"></script>
-  <script src="js/designspace.js?v=40"></script>
-  <script src="js/examples.js?v=40"></script>
-  <script src="js/app.js?v=40"></script>
+  <script src="js/model.js?v=43"></script>
+  <script src="js/floorplan.js?v=43"></script>
+  <script src="js/render.js?v=43"></script>
+  <script src="js/timing.js?v=43"></script>
+  <script src="js/report.js?v=43"></script>
+  <script src="js/designspace_data.js?v=43"></script>
+  <script src="js/designspace.js?v=43"></script>
+  <script src="js/prac_data.js?v=43"></script>
+  <script src="js/prac.js?v=43"></script>
+  <script src="js/examples.js?v=43"></script>
+  <script src="js/app.js?v=43"></script>
 </body>
 </html>

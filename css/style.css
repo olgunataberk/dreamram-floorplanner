@@ -308,3 +308,11 @@ body.tab-report #cv, body.tab-report .hint, body.tab-report #tip, body.tab-repor
 .tref th, .tref td { padding: 4px 12px; text-align: right; border-bottom: 1px solid var(--border); }
 .tref th { color: var(--dim); font-weight: 600; }
 .tref td:first-child, .tref th:first-child { text-align: left; }
+
+/* PRAC tab: penalty bars */
+.dsgridl { stroke: var(--border); opacity: 0.7; }
+.dsaxt { fill: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.dslab { fill: var(--text); font-size: 12px; }
+.dsval { fill: var(--dim); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.prlegend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--dim); margin: 6px 4px 2px; }
+.prlegend i { display: inline-block; width: 12px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
