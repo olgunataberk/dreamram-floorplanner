@@ -9,6 +9,8 @@
   --bad: #f87171;
   --good: #4ade80;
   --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --seq-lo: #184f95;  /* sequential ramp for plot colour (low -> high), dark theme */
+  --seq-hi: #cde2fb;
 }
 :root[data-theme="light"] {
   --bg: #f6f7f9;
@@ -20,6 +22,8 @@
   --accent: #b45309;
   --bad: #dc2626;
   --good: #15803d;
+  --seq-lo: #86b6ef;
+  --seq-hi: #0d366b;
 }
 
 * { box-sizing: border-box; }
@@ -269,3 +273,34 @@ body.tab-report #cv, body.tab-report .hint, body.tab-report #tip, body.tab-repor
 .rlegend i { display: inline-block; width: 18px; height: 10px; vertical-align: -1px; margin-right: 6px; }
 .rlegend .ldie { background: color-mix(in srgb, var(--accent) 16%, transparent); border: 1.5px solid var(--accent); }
 .rlegend .lfoot { border: 1.5px dashed var(--dim); }
+
+/* design space tab (scatter plots); the page itself reuses the report styles */
+.dsdoc { max-width: 940px; }
+.dscontrols { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 12px; font-size: 12.5px; color: var(--dim); }
+.dsseg { display: inline-flex; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 2px; }
+.dsseg button { background: none; border: 0; padding: 3px 10px; border-radius: 5px; cursor: pointer; color: var(--dim); }
+.dsseg button[aria-pressed="true"] { background: var(--panel); color: var(--text); box-shadow: 0 0 0 1px var(--border); }
+.dsseg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dschart { position: relative; margin-top: 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
+.dssvg { display: block; width: 100%; height: auto; }
+.dsgrid line { stroke: var(--border); opacity: 0.7; }
+.dsaxis text { fill: var(--dim); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.dsaxis .title { fill: var(--text); font-weight: 500; font-size: 12.5px; }
+.dsaxis .base { stroke: var(--dim); }
+.dsmark { stroke: var(--panel); stroke-width: 2; cursor: pointer; }
+.dsmark.dim { opacity: 0.15; }
+.dsmark:hover { stroke: var(--text); stroke-width: 1.5; }
+.dsfront { fill: none; stroke: var(--dim); stroke-width: 1.5; stroke-dasharray: 4 4; }
+.dsref { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 2 4; }
+.dsreft { fill: var(--accent); font-size: 11px; font-weight: 500; }
+.dscall { fill: var(--text); font-size: 11.5px; font-weight: 500; }
+.dstip { position: absolute; pointer-events: none; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; font-size: 12px; line-height: 1.45; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); max-width: 300px; z-index: 3; }
+.dstip .dsr { display: grid; grid-template-columns: auto auto; gap: 1px 12px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.dstip .dsr span:nth-child(odd) { color: var(--dim); }
+.dslegend { display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: center; margin-top: 10px; font-size: 12px; color: var(--dim); }
+.dsgrp { display: inline-flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+.dsgrp svg { vertical-align: middle; }
+.dsramp { display: inline-block; width: 130px; height: 10px; border-radius: 3px; background: linear-gradient(90deg, var(--seq-lo), var(--seq-hi)); }
+.dslshape { fill: var(--dim); }
+.dsempty { padding: 28px 16px; color: var(--dim); text-align: center; }

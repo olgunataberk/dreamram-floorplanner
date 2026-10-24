@@ -26,6 +26,7 @@ Then open <http://localhost:8813/>. You can also open `index.html` directly from
 | Labels on/off | **L** |
 | Column-read wave diagram | The **Timing** tab (see [below](#timing-tab)) |
 | HBM4 8 → 32 Gb/s study | The **Report** tab: the interface-scaling results, with buttons that open the bundled designs |
+| 64 B design space at 32 Gb/s | The **Design space** tab: every passing design by power, area, cell efficiency and fault coverage, and the ones within the JEDEC footprint |
 
 Each level dims everything outside the focused component. Drawing switches automatically between level-of-detail stages, so the whole die (~100k MATs) stays responsive.
 
@@ -619,6 +620,22 @@ Two more presets trade area for a package-friendly shape, picked as the die that
 
 Against the modeled Samsung 12-high die (8.62 × 14.72 mm), the 8 Gb/s smallest preset already fits, and the 16 Gb/s 2nd-smallest is the closest (5.5% too tall).
 
+**64 B design space** (the **Design space** tab):
+
+```bash
+python3 tools/build_designspace.py --dreamram /path/to/DreamRAM
+```
+
+This lists every design that reaches 32 Gb/s when the only interface change is a 64 B access (BL16), 196 of them, all needing an I/O sense amp per bank.
+
+The tab opens with why a 64 B access costs little. In DreamRAM's model a pseudo-channel can open four rows per tFAW (about 10 ns). At 32 Gb/s it moves 128 B/ns, so each opened row must already supply about 312 B, ten 32 B reads, to keep the pins busy.
+
+It then shows two plots:
+- **All designs:** worst-case power against die area, coloured by cell efficiency, shaped by driver-fault coverage.
+- **Designs within the JEDEC footprint:** power against die aspect ratio, coloured by row-miss latency, with an exact / 1% / 5% tolerance per side.
+
+Fault coverage: a 64 B access gives each of its two OD-ECC codewords 4 check symbols, so each corrects 2. Only designs with 16 MDLs per MAT, which put 2 symbols per codeword, correct a sub-wordline driver fault. The viewer's OD-ECC check now uses the access size's correction capacity instead of assuming 1. No design fits the footprint exactly; the closest is 14.30 × 10.45 mm, 0.9% too wide.
+
 **Package friendliness.** The sweep also places a die's channels in one row (DreamRAM) or two (`channel_rows`, as in Samsung's HBM4). It reports each die's aspect ratio (long side / short side; the JEDEC HBM4 footprint is 1.29), the squarest passing die within `--area-slack` (10%) of the smallest, and drops dies above `--max-aspect`. The smallest passing dies are long and thin, up to 2.8 : 1. Picking the channel and bank-group arrangement for shape costs about 10–20% area. At 32 Gb/s with aspect ≤ 1.3, the designs that pass under every IOSA placement are:
 - 4 PCs × 16 DQ with 4 groups: 158.0 mm², 14.30 × 11.05 mm, 85 ns;
 - 64 B with 4 groups: 160.5 mm², 14.30 × 11.22 mm, 142 ns.
@@ -671,11 +688,14 @@ js/render.js       canvas renderer, LOD, wiring, TSVs, stack view, hit-testing
 js/app.js          UI: navigation, tree, components, parameters, metrics, exports
 js/timing.js       Timing tab: column-read wave diagram (SVG)
 js/report.js       Report tab: HBM4 interface-scaling study
+js/designspace.js  Design space tab: 64 B / 32 Gb/s scatter plots
+js/designspace_data.js  its data (generated)
 js/examples.js     bundled DreamRAM exports (generated)
 tools/export_floorplan.py   export a design's geometry + metrics from DreamRAM
 tools/build_examples.py     bundle examples/*.json into js/examples.js
 tools/serve.py              no-cache local server
 tools/sweep_pin_rate.py     iso-capacity sweep for a target pin rate (runs DreamRAM via the exporter)
 tools/sweep_interface.py    HBM4 interface scaling 8-32 Gb/s and interface-breaking options at fixed capacity
+tools/build_designspace.py  builds js/designspace_data.js (64 B / 32 Gb/s designs) for the Design space tab
 configs/tech/*.json         DreamRAM tech configs for the HBM4 array and the 20 nm HBM2 cross-check
 ```

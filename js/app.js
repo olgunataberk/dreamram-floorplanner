@@ -562,7 +562,7 @@
           const verdicts = groups.map((cs) => {
             const per = { A: 0, B: 0 };
             for (const c of cs) for (const w of sym(c)) per[w]++;
-            return { per, ok: per.A <= 1 && per.B <= 1 };
+            return { per, ok: per.A <= ecc.tCorr && per.B <= ecc.tCorr };
           });
           const ok = verdicts.every((v) => v.ok);
           rows.push(['Driver fault hits', `${name(l)} + ${name(r)} = ${2 * p.ldls_mdls} b${groups.length > 1 ? ' (in two different accesses)' : ''}`],
@@ -711,7 +711,7 @@
     writeHash();
   }
 
-  // ---------- tabs: floorplan / timing / report ----------
+  // ---------- tabs: floorplan / timing / report / design space ----------
   const timingState = { scenario: 'same_bg', theme: app.theme };
   function renderTimingTab() {
     if (app.tab !== 'timing' || !app.model) return;
@@ -721,10 +721,12 @@
   function setTab(tab) {
     app.tab = tab;
     document.body.classList.toggle('tab-timing', tab === 'timing');
-    document.body.classList.toggle('tab-report', tab === 'report');
+    document.body.classList.toggle('tab-report', tab === 'report' || tab === 'design');
     $('timing').hidden = tab !== 'timing';
     $('report').hidden = tab !== 'report';
+    $('design').hidden = tab !== 'design';
     if (tab === 'report') DR.renderReport($('report'));
+    if (tab === 'design') DR.renderDesignSpace($('design'));
     document.querySelectorAll('.tabs [data-tab]').forEach((b) => {
       b.classList.toggle('on', b.dataset.tab === tab);
       b.setAttribute('aria-selected', String(b.dataset.tab === tab));
@@ -850,6 +852,7 @@
     document.documentElement.dataset.theme = app.theme;
     try { localStorage.setItem('dreamram-theme', app.theme); } catch (e) { /* storage unavailable */ }
     renderLayers(); updateArea(); renderTree(); renderInfo(); renderTimingTab(); app.requestDraw();
+    if (app.tab === 'design') DR.renderDesignSpace($('design')); // plot colours come from the theme tokens
   };
 
   // ---------- URL hash keeps the design shareable ----------
@@ -881,5 +884,5 @@
   R.resize();
   rebuild(false);
   ro.observe(cv);
-  try { const t = localStorage.getItem('dreamram-tab'); if (t === 'timing' || t === 'report') setTab(t); } catch (e) { /* storage unavailable */ }
+  try { const t = localStorage.getItem('dreamram-tab'); if (['timing', 'report', 'design'].includes(t)) setTab(t); } catch (e) { /* storage unavailable */ }
 })();

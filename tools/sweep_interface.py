@@ -116,6 +116,12 @@ def evaluate(a, opt, d, model, rate):
     dies, die_w, non_tsv, cmd_y, data_y, other_y = dram.calc_stack_dims(tech)
     die_h = non_tsv + cmd_y + data_y + other_y
     e_closed = m['metric_e_per_bit_closed']
+    # OD-ECC: two Reed-Solomon codewords per access with od_ecc_prop x access / 8 / 2 check symbols each (t = half of
+    # that). A sub-wordline driver fault corrupts the two MATs beside it (Ryu et al.); with one 8-bit symbol per MAT
+    # they land in different codewords, otherwise each codeword takes ldls_mdls / 8 symbols (js/floorplan.js eccLayout)
+    spm = d['ldls_mdls'] / 8
+    fault_t = int(dram.od_ecc_prop * access / 8 / 2 // 2)
+    fault_hits = 1 if spm <= 1 else int(spm)
     return dict(option=opt, model=model, rate=rate, **{k: d[k] for k in d}, bgs=bgs, banks_pc=bgs * d['banks'], pch=pch,
                 dq_pc=dq_pc, access=access, pumps=pumps, tccdl=tccdl, tccdl_need=bgs * tb, rmax=rmax,
                 limiter='bank cycle' if pumps * bank >= shared else SW.STAGE_NAMES[max(sh, key=sh.get)],
@@ -123,7 +129,7 @@ def evaluate(a, opt, d, model, rate):
                 gbus_sets=f'{math.ceil(1.0 * fo4 / tb - 1e-9)}-{math.ceil(2.0 * fo4 / tb - 1e-9)}',
                 ck_ghz=rate / 4, ca_use=pch / (tb * rate / 4),
                 die_w=die_w / 1000, die_h=die_h / 1000, die=die_w * die_h / 1e6, aspect=max(die_w, die_h) / min(die_w, die_h), tsv_mm2=die_w * (cmd_y + data_y + other_y) / 1e6,
-                latency=m['worst_latency_ns'], e_closed=e_closed, power=e_closed * 1e-12 * DQ_CH * CHANNELS * rate * 1e9)
+                latency=m['worst_latency_ns'], e_closed=e_closed, cell_eff=m['cell_eff'], fault_hits=fault_hits, fault_t=fault_t, power=e_closed * 1e-12 * DQ_CH * CHANNELS * rate * 1e9)
 
 
 def org(r):

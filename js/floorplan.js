@@ -222,7 +222,9 @@
     const active = dataMats + eccMats, spm = p.ldls_mdls / 8; // symbols per MAT per access
     const symbols = active * spm, n = symbols / 2;
     const check = (m.t.od_ecc * p.atom_size) / 8 / 2; // OD-ECC check symbols per codeword
-    return { dataMats, eccMats, active, spm, symbols, n, k: n - check, check, swdSymPerCw: Math.max(1, spm), correctable: spm <= 1 && check >= 2 };
+    // a driver fault puts one symbol in each codeword when MATs carry one symbol, else spm symbols per codeword
+    const tCorr = Math.floor(check / 2), swdSymPerCw = spm <= 1 ? 1 : spm;
+    return { dataMats, eccMats, active, spm, symbols, n, k: n - check, check, tCorr, swdSymPerCw, correctable: swdSymPerCw <= tCorr };
   };
   // codeword of symbol s of the MAT at access position a ('A' / 'B')
   DR.codeword = (spm, a, s) => ((spm <= 1 ? a : s) % 2 ? 'B' : 'A');
